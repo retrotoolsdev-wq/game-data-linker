@@ -2,6 +2,8 @@
 
 A [Millennium](https://steambrew.app/) plugin that makes non-Steam games look and feel like real Steam games. Link any non-Steam shortcut to a Steam AppID and its library page fills with that game's real data — artwork, news, friend activity, achievements, community content, and more.
 
+[![ko-fi](https://img.shields.io/badge/Support%20on-Ko--fi-FF5E5B?logo=ko-fi&logoColor=white)](https://ko-fi.com/retrotools)
+
 ## Features
 
 - **Automatic artwork** — hero banner, logo, portrait grid, and wide capsule are downloaded from Steam's CDN and applied to the shortcut
@@ -48,6 +50,10 @@ Backend changes (`backend/main.lua`) only need a Steam restart.
 - Friend activity is read from the Steam client's own activity store (`appActivityStore`) for the linked AppID
 - Achievement progress uses the client's `appAchievementProgressCache`, so games you own show your real unlock counts
 - Injected DOM reuses Steam's hashed CSS-module classes, resolved at runtime via Millennium's webpack tools with fallbacks for the current Steam build
+
+## Support
+
+These tools are free and open source. If you get some use out of them and want to toss a few bucks my way for coffee or hosting, it's appreciated but never expected: **[ko-fi.com/retrotools](https://ko-fi.com/retrotools)**
 
 ## License
 
