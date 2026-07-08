@@ -146,13 +146,13 @@ function fetch_game_data(steam_app_id)
     return cjson.encode(app_data.data)
 end
 
--- Frontend debug logger — single string param to avoid argument-passing issues
+-- Frontend debug logger - single string param to avoid argument-passing issues
 function fe_log(msg)
     logger:info("[FE] " .. tostring(msg))
     return "ok"
 end
 
--- fetch_image removed — images will be fetched from frontend directly
+-- fetch_image removed - images will be fetched from frontend directly
 
 function fetch_news(steam_app_id)
     local url = "https://api.steampowered.com/ISteamNews/GetNewsForApp/v0002/?appid="
@@ -391,7 +391,7 @@ local function parse_hub_cards(html, fallback_type, items)
     -- Debug: log bytes around position 100-200 to check encoding
     logger:info("parse_hub_cards: html length=" .. tostring(#html) .. " first200=" .. html:sub(1, 200))
 
-    -- Try multiple delimiter patterns — the Millennium http module may return
+    -- Try multiple delimiter patterns - the Millennium http module may return
     -- the HTML with different quoting or the id may use single quotes
     local DELIM = 'id="apphub_Card_'
     local first = html:find(DELIM, 1, true)

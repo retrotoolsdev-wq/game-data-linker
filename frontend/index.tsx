@@ -298,7 +298,7 @@ const POST_CLASSES = (): CssClasses =>
 
 // ── Achievement progress ────────────────────────────────────────────────
 // Steam tracks per-app achievement progress for the logged-in user in
-// appAchievementProgressCache — works for the LINKED appid when the user
+// appAchievementProgressCache - works for the LINKED appid when the user
 // actually owns that game, so real progress (e.g. 18/29) shows up.
 
 interface AchProgress { unlocked: number; total: number }
@@ -393,7 +393,7 @@ async function postStatusUpdate(appid: number, text: string): Promise<boolean> {
 	}
 }
 
-/** Sidebar achievements panel body — mirrors the native HighlightDiv structure */
+/** Sidebar achievements panel body - mirrors the native HighlightDiv structure */
 function renderAchievementsPanel(unlocked: number, total: number): string {
 	const c = ACH_CLASSES();
 	const pct = Math.round((100 * unlocked) / total);
@@ -449,7 +449,7 @@ function findElementByExactText(root: Element | Document, text: string): Element
 function tryInjectPropertiesField(doc: Document, popupTitle: string): void {
 	if (doc.querySelector(`.${GDL_PROP}`)) return;
 
-	// Confirm we're on the Shortcut tab (localized — labels change with Steam language).
+	// Confirm we're on the Shortcut tab (localized - labels change with Steam language).
 	// "Launch Options"/"Target" use exact matching: as substrings they show up
 	// inside ordinary page text (news, reviews) and cause false positives.
 	const vrLibEl = findElementByText(doc, loc('AppProperties_Shortcut_InVR', 'Include in VR Library'));
@@ -482,7 +482,7 @@ function tryInjectPropertiesField(doc: Document, popupTitle: string): void {
 		return t;
 	};
 
-	// 1. Popup title — for Properties windows this is typically the game name
+	// 1. Popup title - for Properties windows this is typically the game name
 	gameTitle = extractTitle(popupTitle);
 
 	// 2. Document title
@@ -636,7 +636,7 @@ function tryInjectPropertiesField(doc: Document, popupTitle: string): void {
 	}
 }
 
-// ── 2. LIBRARY PAGE — DOM INJECTION ────────────────────────────────────
+// ── 2. LIBRARY PAGE - DOM INJECTION ────────────────────────────────────
 // Replicate the native Steam library page layout exactly.
 // SetCustomArtworkForApp handles hero/logo/grid; DOM injection handles content.
 
@@ -727,7 +727,7 @@ async function getNews(steamAppId: string): Promise<NewsItem[]> {
 	const cached = cacheGet<NewsItem[]>('events3_' + steamAppId);
 	if (cached) return cached;
 
-	// Primary source: partner events — same source the native page uses,
+	// Primary source: partner events - same source the native page uses,
 	// with per-event cover images, event types, and the user's language
 	try {
 		const lang = await getSteamLanguage();
@@ -851,7 +851,7 @@ function clearArtworkSaved(shortcutAppId: number): void {
 /** Set ALL artwork for a shortcut using SetCustomArtworkForApp.
  *  Signature: SteamClient.Apps.SetCustomArtworkForApp(appId, base64Data, fileExtension, imageType)
  *  The extension param is a FILE EXTENSION like ".jpg" or ".png" (not a MIME type).
- *  IMPORTANT: Must call directly on the SteamClient.Apps object — extracting the function
+ *  IMPORTANT: Must call directly on the SteamClient.Apps object - extracting the function
  *  breaks Steam's IPC proxy and produces "Unknown method" errors. */
 const artworkSpoofed = new Set<string>();
 async function spoofArtwork(shortcutAppId: number, steamAppId: string, force = false): Promise<void> {
@@ -881,7 +881,7 @@ async function spoofArtwork(shortcutAppId: number, steamAppId: string, force = f
 		[`${cdnBase}/header.jpg`, 3, 'Wide Capsule'],
 	];
 
-	// Extension map WITHOUT dots — Steam API expects 'png'/'jpg', not '.png'/'.jpg'
+	// Extension map WITHOUT dots - Steam API expects 'png'/'jpg', not '.png'/'.jpg'
 	const extMap: Record<string, string> = { '.jpg': 'jpg', '.jpeg': 'jpg', '.png': 'png' };
 
 	// Download all images in parallel
@@ -1021,7 +1021,7 @@ async function getFriendData(steamAppId: string): Promise<{ html: string; data: 
 
 // ── Real activity feed via Steam's own appActivityStore ────────────────
 // appActivityStore.GetAppActivity(appid) restores cached activity and fetches
-// friend news (achievement unlocks etc.) from Steam's GetUserNews service —
+// friend news (achievement unlocks etc.) from Steam's GetUserNews service -
 // this works for the LINKED appid, so the fake page shows the real feed.
 
 async function getRealActivity(appid: number): Promise<any | null> {
@@ -1363,7 +1363,7 @@ async function injectPlayBarAchievements(doc: Document, steamAppId: string, fall
 	if (currentInjectedAppId !== steamAppId) return;
 	if (doc.getElementById('gdl-playbar-achievements')) return;
 
-	// Case-insensitive exact text lookup — some builds store stat labels
+	// Case-insensitive exact text lookup - some builds store stat labels
 	// already uppercased in the DOM rather than via CSS text-transform
 	const findLabel = (text: string): HTMLElement | null => {
 		const lower = text.trim().toLowerCase();
@@ -1633,7 +1633,7 @@ function injectGameData(
 		hideEl = parent;
 	}
 
-	// ── Sidebar section builder — clones native classes from the NOTES region ──
+	// ── Sidebar section builder - clones native classes from the NOTES region ──
 	const buildSidebarSection = (sectionId: string, headerText: string, innerId: string, innerHtml: string, cloneInnerClass = true): HTMLElement | null => {
 		if (!anchorRegion) return null;
 		const regionChildren = Array.from(anchorRegion.children);
@@ -1697,7 +1697,7 @@ function injectGameData(
 		}
 	}
 
-	// ── Achievements section — native HighlightDiv markup; starts at 0/N and
+	// ── Achievements section - native HighlightDiv markup; starts at 0/N and
 	// is updated with the user's real progress by finalizeAchievements() ──
 	const achTotal = data.achievements?.total || 0;
 	if (achTotal > 0 && anchorRegion && sidebarColumn) {
@@ -1713,7 +1713,7 @@ function injectGameData(
 		}
 	}
 
-	// ── Build news cards — native partner-event styling, 3 newest stories ──
+	// ── Build news cards - native partner-event styling, 3 newest stories ──
 	const grouped = groupNewsByDate(newsItems.slice(0, 3));
 	let newsHtml = '';
 
@@ -1788,7 +1788,7 @@ function injectGameData(
 		const screenshots = displayItems.filter(i => i.type !== 'guide');
 		const guides = displayItems.filter(i => i.type === 'guide');
 
-		// Author strip under the card (dark bar, 32px avatar) — native anatomy
+		// Author strip under the card (dark bar, 32px avatar) - native anatomy
 		const authorBar = (item: CommunityContentItem) => {
 			if (!item.author_name && !item.author_avatar) return '';
 			return `<div style="display:flex;align-items:center;gap:10px;padding:8px 12px;background:rgba(0,0,0,0.25);margin-top:auto;min-height:32px;">
@@ -1824,7 +1824,7 @@ function injectGameData(
 			</div>`;
 		};
 
-		// Main grid: 3 columns like the native section — screenshots first,
+		// Main grid: 3 columns like the native section - screenshots first,
 		// then guides, backfilled with more screenshots (max 6 cards)
 		const mainCards: string[] = [];
 		let ssUsed = 0;
@@ -1991,7 +1991,7 @@ function injectGameData(
 		});
 	}
 
-	// ── INSERT community content — native section panel inside the content column ──
+	// ── INSERT community content - native section panel inside the content column ──
 	if (communityHtml) {
 		const node = buildSidebarSection(
 			'gdl-community-content',
@@ -2102,7 +2102,7 @@ function insertSkeleton(doc: Document, noticeElement: Element): void {
 async function tryInjectLibraryData(doc: Document): Promise<void> {
 	const noticeInfo = findNonSteamNotice(doc);
 
-	// If no notice found, we navigated away from a non-Steam game — clean up
+	// If no notice found, we navigated away from a non-Steam game - clean up
 	if (!noticeInfo) {
 		if (currentInjectedAppId) {
 			cleanupInjection(doc);
@@ -2116,7 +2116,7 @@ async function tryInjectLibraryData(doc: Document): Promise<void> {
 	const steamAppId = findMappingForTitle(gameTitle);
 	if (!steamAppId) return;
 
-	// Already injected for this exact game — but Steam's React re-renders can
+	// Already injected for this exact game - but Steam's React re-renders can
 	// evict just the play-bar stat while the rest survives, so re-heal it
 	if (currentInjectedAppId === steamAppId && doc.getElementById(GDL_INJECTED)) {
 		if (!doc.getElementById('gdl-playbar-achievements')) {
@@ -2162,7 +2162,7 @@ async function tryInjectLibraryData(doc: Document): Promise<void> {
 	let friendData: { html: string; data: FriendCategories | null } = { html: '', data: null };
 	let communityItems: CommunityContentItem[] = [];
 	try {
-		// Fetch in parallel — instant when the 24h caches are fresh
+		// Fetch in parallel - instant when the 24h caches are fresh
 		[data, newsItems, friendData, communityItems] = await Promise.all([
 			getGameData(steamAppId),
 			getNews(steamAppId),
@@ -2179,7 +2179,7 @@ async function tryInjectLibraryData(doc: Document): Promise<void> {
 	}
 	if (currentInjectedAppId !== steamAppId) return;
 
-	// Full render — skipped when the cached render already produced identical
+	// Full render - skipped when the cached render already produced identical
 	// output; re-run if sections the cache lacked have now arrived
 	if (!renderedFromCache || (cacheMissedSections && (newsItems.length > 0 || friendData.data?.totalCount || communityItems.length > 0))) {
 		injectGameData(doc, notice, data, steamAppId, newsItems, friendData.data, communityItems);
@@ -2237,7 +2237,7 @@ function windowCreated(context: any): void {
 
 	let mutationTimer: ReturnType<typeof setTimeout> | null = null;
 	const runInjection = () => {
-		// Properties dialogs are their own popup windows — never scan the main
+		// Properties dialogs are their own popup windows - never scan the main
 		// window for them, or loose text matches can plant the form in the library
 		if (isMainWindow) tryInjectLibraryData(popupDoc);
 		else tryInjectPropertiesField(popupDoc, popupTitle);
@@ -2276,7 +2276,7 @@ const SettingsContent = () => (
 );
 
 export default definePlugin(() => {
-	console.log('[GDL] definePlugin callback executing — frontend initialized successfully');
+	console.log('[GDL] definePlugin callback executing - frontend initialized successfully');
 
 	loadMappings()
 		.then(() => {
@@ -2284,7 +2284,7 @@ export default definePlugin(() => {
 		})
 		.catch((e) => {
 			console.error('[GDL] Failed to load mappings from backend:', e);
-			// Continue anyway — the UI should still work, just without saved mappings
+			// Continue anyway - the UI should still work, just without saved mappings
 		});
 
 	Millennium.AddWindowCreateHook(windowCreated);
