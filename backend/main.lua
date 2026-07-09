@@ -520,7 +520,10 @@ local function parse_hub_cards(html, fallback_type, items)
         if item.image and item.image ~= "" then
             table.insert(items, item)
             if #items <= 3 then
-                logger:info("Parsed item #" .. tostring(#items) .. ": type=" .. tostring(item.type) .. " title=" .. tostring(item.title or ""):sub(1, 40) .. " author=" .. tostring(item.author_name or ""))
+                logger:info("Parsed item #" .. tostring(#items) .. ": type=" .. tostring(item.type)
+                    .. " title=" .. tostring(item.title or ""):sub(1, 40)
+                    .. " author=" .. tostring(item.author_name or "")
+                    .. " link=..." .. tostring(item.link or ""):sub(-24))
             end
         end
 
