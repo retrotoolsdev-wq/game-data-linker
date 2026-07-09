@@ -669,23 +669,79 @@ const LOCALE_TO_STEAM_LANG: Record<string, string> = {
 	id: 'indonesian',
 };
 
+// Fingerprint table: the localized value of AppDetails_SectionTitle_Achievements
+// identifies the UI language (ambiguous values resolved via the Friends title).
+// This works even when client APIs don't, because the localization tokens are
+// by definition loaded in the user's language.
+const LANG_FINGERPRINT: Record<string, string> = {
+	'الإنجازات': 'arabic', 'Conquistas': 'brazilian', 'Постижения': 'bulgarian',
+	'Achievementy': 'czech', 'Præstationer': 'danish', 'Prestaties': 'dutch',
+	'Achievements': 'english', 'Saavutukset': 'finnish', 'Succès': 'french',
+	'Errungenschaften': 'german', 'Επιτεύγματα': 'greek', 'Teljesítmények': 'hungarian',
+	'Achievement': 'italian', '実績': 'japanese', '도전 과제': 'koreana',
+	'Prestasjoner': 'norwegian', 'Osiągnięcia': 'polish', 'Proezas': 'portuguese',
+	'Realizări': 'romanian', 'Достижения': 'russian', 'Prestationer': 'swedish',
+	'รางวัลความสำเร็จ': 'thai', 'Başarımlar': 'turkish', 'Досягнення': 'ukrainian',
+	'Thành tựu': 'vietnamese',
+};
+const LANG_TIEBREAK: Record<string, Record<string, string>> = {
+	'Logros': { 'Amigos que juegan a este juego': 'spanish', 'Amigos que juegan': 'latam' },
+	'成就': { '玩过的好友': 'schinese', '遊玩過的好友': 'tchinese' },
+	'Pencapaian': { 'Teman yang bermain': 'indonesian', 'Rakan yang bermain': 'malay' },
+};
+
+let _steamLanguage: string | null = null;
+
+/** Synchronous access to the detected language (null until first detection) */
+function steamLanguageSync(): string | null {
+	return _steamLanguage;
+}
+
 async function getSteamLanguage(): Promise<string> {
+	if (_steamLanguage) return _steamLanguage;
+	let lang = '';
+
+	// 1. Ask the client directly
 	try {
 		const sc = (window as any).SteamClient;
 		if (typeof sc?.Settings?.GetCurrentLanguage === 'function') {
 			const l = await sc.Settings.GetCurrentLanguage();
-			if (typeof l === 'string' && l) return l;
+			if (typeof l === 'string' && /^[a-z_]+$/.test(l)) lang = l;
 		}
 	} catch {}
-	try {
-		const locales: string[] = (window as any).LocalizationManager?.m_rgLocalesToUse || [];
-		for (const raw of locales) {
-			const lc = String(raw).toLowerCase();
-			if (LOCALE_TO_STEAM_LANG[lc]) return LOCALE_TO_STEAM_LANG[lc];
-			const base = lc.split('-')[0];
-			if (LOCALE_TO_STEAM_LANG[base]) return LOCALE_TO_STEAM_LANG[base];
+
+	// 2. Fingerprint the loaded localization tokens
+	if (!lang) {
+		const ach = loc('AppDetails_SectionTitle_Achievements', '');
+		if (ach) {
+			const tie = LANG_TIEBREAK[ach];
+			if (tie) {
+				lang = tie[loc('AppDetails_SectionTitle_Friends', '')] || Object.values(tie)[0];
+			} else {
+				lang = LANG_FINGERPRINT[ach] || '';
+			}
 		}
-	} catch {}
+	}
+
+	// 3. Browser locale mapping
+	if (!lang) {
+		try {
+			const locales: string[] = (window as any).LocalizationManager?.m_rgLocalesToUse || [];
+			for (const raw of locales) {
+				const lc = String(raw).toLowerCase();
+				if (LOCALE_TO_STEAM_LANG[lc]) { lang = LOCALE_TO_STEAM_LANG[lc]; break; }
+				const base = lc.split('-')[0];
+				if (LOCALE_TO_STEAM_LANG[base]) { lang = LOCALE_TO_STEAM_LANG[base]; break; }
+			}
+		} catch {}
+	}
+
+	if (lang) {
+		_steamLanguage = lang;
+		backendLog('Steam language detected: ' + lang);
+		return lang;
+	}
+	// Last resort: not memoized, so a later call can still detect properly
 	return 'english';
 }
 
@@ -724,14 +780,16 @@ async function getCommunityContent(steamAppId: string): Promise<CommunityContent
 }
 
 async function getNews(steamAppId: string): Promise<NewsItem[]> {
-	// v3: don't serve caches poisoned by the pre-partner-events fallback
-	const cached = cacheGet<NewsItem[]>('events3_' + steamAppId);
+	// Cache is per-language: switching the Steam language must refetch
+	// instead of serving the old language for 24h
+	const lang = await getSteamLanguage();
+	const cacheKey = 'events4_' + lang + '_' + steamAppId;
+	const cached = cacheGet<NewsItem[]>(cacheKey);
 	if (cached) return cached;
 
 	// Primary source: partner events - same source the native page uses,
 	// with per-event cover images, event types, and the user's language
 	try {
-		const lang = await getSteamLanguage();
 		const json = await fetchPartnerEventsBackend({ steam_app_id: steamAppId, language: lang });
 		const parsed = JSON.parse(json);
 		if (Array.isArray(parsed.items) && parsed.items.length > 0) {
@@ -744,7 +802,7 @@ async function getNews(steamAppId: string): Promise<NewsItem[]> {
 				event_type: e.event_type || 0,
 				image: e.image || '',
 			}));
-			cacheSet('events3_' + steamAppId, items);
+			cacheSet(cacheKey, items);
 			return items;
 		}
 		backendLog('Partner events empty for ' + steamAppId + ', falling back to news feed');
@@ -2155,7 +2213,9 @@ async function tryInjectLibraryData(doc: Document): Promise<void> {
 	let cacheMissedSections = false;
 	if (cachedData && !doc.getElementById(GDL_INJECTED)) {
 		gameDataCache[steamAppId] = cachedData;
-		const cNews = cacheGet<NewsItem[]>('events3_' + steamAppId) || [];
+		// News cache is per-language; readable synchronously only once detected
+		const lang = steamLanguageSync();
+		const cNews = lang ? (cacheGet<NewsItem[]>('events4_' + lang + '_' + steamAppId) || []) : [];
 		const cFriends = cacheGet<FriendCategories>('friends_' + steamAppId) || null;
 		const cCommunity = cacheGet<CommunityContentItem[]>('community3_' + steamAppId) || [];
 		injectGameData(doc, notice, cachedData, steamAppId, cNews, cFriends, cCommunity);
@@ -2299,6 +2359,9 @@ export default definePlugin(() => {
 			console.error('[GDL] Failed to load mappings from backend:', e);
 			// Continue anyway - the UI should still work, just without saved mappings
 		});
+
+	// Detect the UI language early so cached news can be read synchronously
+	getSteamLanguage().catch(() => {});
 
 	Millennium.AddWindowCreateHook(windowCreated);
 	console.log('[GDL] Window create hook registered');
