@@ -1146,7 +1146,7 @@ function renderScreenshotEvent(event: any, previews: Map<string, string>, isVide
 			: loc('AppActivity_PostedScreenshot_Plural', ' shared %1$s screenshots').replace('%1$s', String(count)));
 
 	const uid = 'gdlss' + String(event.unUniqueID || Math.floor(Math.random() * 1e9));
-	const fileUrl = (id: string) => `steam://openurl/https://steamcommunity.com/sharedfiles/filedetails/?id=${id}`;
+	const fileUrl = (id: string) => `https://steamcommunity.com/sharedfiles/filedetails/?id=${id}`;
 	const main = imgs[0];
 	const thumbs = imgs.slice(1, 5);
 	const ts = event.rtEventTime || 0;
@@ -1163,7 +1163,7 @@ function renderScreenshotEvent(event: any, previews: Map<string, string>, isVide
 	const body = `<div class="${EVENT_CLASSES().EventBody}">
 		<div style="padding:12px;">
 			<div style="display:flex;gap:8px;align-items:flex-start;">
-				<a id="${uid}-link" href="${fileUrl(main.id)}" style="flex:0 1 ${thumbs.length ? '56%' : '80%'};min-width:0;">
+				<a id="${uid}-link" href="${fileUrl(main.id)}" onclick="window.gdlOpen(this.getAttribute('href'));return false;" style="flex:0 1 ${thumbs.length ? '56%' : '80%'};min-width:0;">
 					<img id="${uid}-main" src="${escapeHtml(main.img)}" style="width:100%;display:block;" onerror="this.style.display='none'" />
 				</a>
 				${thumbs.length ? `<div style="flex:1;display:grid;grid-template-columns:repeat(2,1fr);gap:8px;align-content:start;">
@@ -1180,7 +1180,7 @@ function renderScreenshotEvent(event: any, previews: Map<string, string>, isVide
  *  Native uses a 200x94 header-image carousel item. */
 function renderCapsuleBody(appid: string, fallbackHeader: string): string {
 	return `<div class="${EVENT_CLASSES().EventBody}"><div style="padding:12px;">
-		<a href="steam://openurl/https://store.steampowered.com/app/${appid}">
+		<a href="#" onclick="window.gdlOpen('https://store.steampowered.com/app/${appid}');return false;">
 			<img src="https://cdn.akamai.steamstatic.com/steam/apps/${appid}/header.jpg" style="display:block;width:200px;height:94px;object-fit:cover;" onerror="this.src='${escapeHtml(fallbackHeader)}'" />
 		</a>
 	</div></div>`;
@@ -1199,7 +1199,7 @@ interface FriendReview {
 function renderReviewEvent(event: any, review: FriendReview | undefined, appid: string): string {
 	const verb = escapeHtml(loc('AppActivity_RecommendedGame', ' reviewed this game'));
 	const url = review?.url || `https://steamcommunity.com/profiles/${eventActorId(event)}/recommended/${appid}/`;
-	const readMore = `<a href="steam://openurl/${url}" style="display:inline-block;margin-top:8px;color:#8c9193;font-size:12px;text-decoration:none;">${escapeHtml(loc('AppActivity_RecommendedGame_ReadMore', 'Read More'))}</a>`;
+	const readMore = `<a href="#" onclick="window.gdlOpen('${url}');return false;" style="display:inline-block;margin-top:8px;color:#8c9193;font-size:12px;text-decoration:none;">${escapeHtml(loc('AppActivity_RecommendedGame_ReadMore', 'Read More'))}</a>`;
 
 	let inner: string;
 	if (review && review.found) {
@@ -1427,12 +1427,10 @@ async function injectPlayBarAchievements(doc: Document, steamAppId: string, fall
 	// Open the user's achievements page for the linked game on click
 	stat.style.cursor = 'pointer';
 	stat.addEventListener('click', () => {
-		const url = `steam://openurl/https://steamcommunity.com/my/stats/${steamAppId}/achievements`;
-		try {
-			const sc = (doc.defaultView as any)?.SteamClient || (window as any).SteamClient;
-			if (sc?.URL?.ExecuteSteamURL) sc.URL.ExecuteSteamURL(url);
-			else doc.defaultView?.open(url);
-		} catch {}
+		const url = `https://steamcommunity.com/my/stats/${steamAppId}/achievements`;
+		const opener = (doc.defaultView as any)?.gdlOpen;
+		if (typeof opener === 'function') opener(url);
+		else doc.defaultView?.open('steam://openurl/' + url);
 	});
 
 	statsRow.insertBefore(stat, statRoot.nextSibling);
@@ -1545,7 +1543,7 @@ function renderFriendsSection(friendResult: FriendCategories | null, steamAppId:
 
 	// "View all friends who play" link at bottom right
 	html += `<div style="text-align:right;margin-top:12px;">
-		<a href="steam://openurl/https://steamcommunity.com/app/${steamAppId}" style="font-size:12px;color:#8f98a0;text-decoration:none;">View all friends who play</a>
+		<a href="#" onclick="window.gdlOpen('https://steamcommunity.com/app/${steamAppId}');return false;" style="font-size:12px;color:#8f98a0;text-decoration:none;">View all friends who play</a>
 	</div>`;
 
 	return html;
@@ -1570,6 +1568,20 @@ function injectGameData(
 	}
 
 	const noticeParent = noticeElement.closest('div');
+
+	// In-client link opener for injected content: the native pages open web
+	// links in the client's own browser view, not the system browser
+	(doc.defaultView as any).gdlOpen = (u: string) => {
+		if (!u) return;
+		try {
+			const mgr = (doc.defaultView as any).MainWindowBrowserManager || (window as any).MainWindowBrowserManager;
+			if (mgr && typeof mgr.ShowURL === 'function') {
+				mgr.ShowURL(u);
+				return;
+			}
+		} catch {}
+		try { doc.defaultView?.open('steam://openurl/' + u); } catch {}
+	};
 
 	// ── Detect native layout structure using NOTES as anchor ──
 	// Native structure: Panel > [play area] > [link bar zone] > twoColRow(flex) > [sidebarCol, contentCol]
@@ -1736,7 +1748,7 @@ function injectGameData(
 				if (isFirstCard) {
 					// Newest story renders in the native large/featured layout
 					newsHtml += `
-						<div class="${n.Event} ${n.PartnerEvent} ${n.PartnerEventLargeImage_Container}${isMajor ? ' ' + n.PartnerEventFeatured : ''}" style="position:relative;margin-bottom:16px;" onclick="window.open('steam://openurl/${item.url}')">
+						<div class="${n.Event} ${n.PartnerEvent} ${n.PartnerEventLargeImage_Container}${isMajor ? ' ' + n.PartnerEventFeatured : ''}" style="position:relative;margin-bottom:16px;" onclick="window.gdlOpen('${item.url}')">
 							<div class="${n.PartnerEventLargeImage_Contents}">
 								<div class="${n.ImageContainer}">
 									<img class="${n.PartnerEventLargeImage_Image}" src="${escapeHtml(thumbUrl)}" onerror="this.src='${escapeHtml(data.header_image || '')}'" />
@@ -1751,7 +1763,7 @@ function injectGameData(
 					`;
 				} else {
 					newsHtml += `
-						<div class="${n.Event} ${n.PartnerEvent} ${n.PartnerEventMediumImage_Container}${isMajor ? ' ' + n.PartnerEventLargeUpdate : ''}" style="position:relative;margin-bottom:16px;" onclick="window.open('steam://openurl/${item.url}')">
+						<div class="${n.Event} ${n.PartnerEvent} ${n.PartnerEventMediumImage_Container}${isMajor ? ' ' + n.PartnerEventLargeUpdate : ''}" style="position:relative;margin-bottom:16px;" onclick="window.gdlOpen('${item.url}')">
 							${isMajor ? `<div class="${n.LeftSideMajorUpdateBar}"></div>` : ''}
 							<div class="${n.PartnerEventMediumImage_Contents}">
 								<div class="${n.MediumImageContainer}">
@@ -1801,8 +1813,8 @@ function injectGameData(
 		const CARD_BG = 'rgba(103,112,128,0.12)';
 
 		const screenshotCard = (item: CommunityContentItem) => {
-			const link = item.link ? `steam://openurl/${item.link}` : '#';
-			return `<div style="background:${CARD_BG};overflow:hidden;cursor:pointer;display:flex;flex-direction:column;min-width:0;" onclick="window.open('${link}')">
+			const click = item.link ? ` onclick="window.gdlOpen('${item.link}')"` : '';
+			return `<div style="background:${CARD_BG};overflow:hidden;cursor:pointer;display:flex;flex-direction:column;min-width:0;"${click}>
 				<div style="position:relative;overflow:hidden;">
 					<img src="${item.image || ''}" style="width:100%;max-width:100%;aspect-ratio:16/9;object-fit:cover;display:block;" onerror="this.style.display='none'" />
 					${item.title ? `<div style="position:absolute;bottom:0;left:0;right:0;padding:8px 10px;font-size:13px;color:#fff;text-shadow:0 1px 3px rgba(0,0,0,0.8);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(item.title)}</div>` : ''}
@@ -1812,8 +1824,8 @@ function injectGameData(
 		};
 
 		const guideCard = (item: CommunityContentItem) => {
-			const link = item.link ? `steam://openurl/${item.link}` : '#';
-			return `<div style="background:${CARD_BG};overflow:hidden;cursor:pointer;display:flex;flex-direction:column;min-width:0;" onclick="window.open('${link}')">
+			const click = item.link ? ` onclick="window.gdlOpen('${item.link}')"` : '';
+			return `<div style="background:${CARD_BG};overflow:hidden;cursor:pointer;display:flex;flex-direction:column;min-width:0;"${click}>
 				<div style="padding:8px 12px;background:rgba(0,0,0,0.25);font-size:11px;letter-spacing:0.5px;font-weight:500;color:#8f98a0;text-transform:uppercase;">${escapeHtml((item.label ? 'Community ' + item.label : 'Community Guide').toUpperCase())}</div>
 				<div style="display:flex;gap:12px;padding:12px;align-items:flex-start;">
 					<img src="${item.image || ''}" style="width:92px;height:92px;object-fit:cover;flex-shrink:0;" onerror="this.style.display='none'" />
@@ -1841,8 +1853,8 @@ function injectGameData(
 		const thumbItems = screenshots.slice(ssUsed, ssUsed + 5);
 		const thumbRow = thumbItems.length
 			? `<div style="display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px;margin-top:24px;">${thumbItems.map(t => {
-				const tlink = t.link ? `steam://openurl/${t.link}` : '#';
-				return `<div style="position:relative;overflow:hidden;cursor:pointer;" onclick="window.open('${tlink}')">
+				const tclick = t.link ? ` onclick="window.gdlOpen('${t.link}')"` : '';
+				return `<div style="position:relative;overflow:hidden;cursor:pointer;"${tclick}>
 					<img src="${t.image || ''}" style="width:100%;aspect-ratio:16/9;object-fit:cover;display:block;" onerror="this.style.display='none'" />
 					${t.title ? `<div style="position:absolute;bottom:0;left:0;right:0;padding:6px 8px;font-size:12px;color:#fff;text-shadow:0 1px 2px rgba(0,0,0,0.8);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(t.title)}</div>` : ''}
 				</div>`;
@@ -1886,7 +1898,7 @@ function injectGameData(
 		<div id="gdl-news-section">${newsHtml}</div>
 
 		<div style="display:flex;justify-content:center;margin-top:24px;">
-			<a href="steam://openurl/https://steamcommunity.com/app/${steamAppId}" class="${FEED_CLASSES().FetchMoreContainer}"
+			<a href="#" onclick="window.gdlOpen('https://steamcommunity.com/app/${steamAppId}');return false;" class="${FEED_CLASSES().FetchMoreContainer}"
 			   style="text-decoration:none;cursor:pointer;">${escapeHtml(loc('AppActivity_FetchMore', 'Load More Activity'))}</a>
 		</div>
 	`;
@@ -1896,15 +1908,15 @@ function injectGameData(
 	linkBar.id = 'gdl-link-bar';
 	linkBar.style.cssText = 'display:flex;align-items:center;padding:6px 16px;';
 	linkBar.innerHTML = [
-		['Store Page', `steam://openurl/https://store.steampowered.com/app/${steamAppId}`],
-		['Community Hub', `steam://openurl/https://steamcommunity.com/app/${steamAppId}`],
-		['Points Shop', `steam://openurl/https://store.steampowered.com/points/shop/app/${steamAppId}`],
-		['Discussions', `steam://openurl/https://steamcommunity.com/app/${steamAppId}/discussions/`],
-		['Guides', `steam://openurl/https://steamcommunity.com/app/${steamAppId}/guides/`],
-		['Workshop', `steam://openurl/https://steamcommunity.com/app/${steamAppId}/workshop/`],
-		['Support', `steam://openurl/https://help.steampowered.com/en/wizard/HelpWithGame/?appid=${steamAppId}`],
+		['Store Page', `https://store.steampowered.com/app/${steamAppId}`],
+		['Community Hub', `https://steamcommunity.com/app/${steamAppId}`],
+		['Points Shop', `https://store.steampowered.com/points/shop/app/${steamAppId}`],
+		['Discussions', `https://steamcommunity.com/app/${steamAppId}/discussions/`],
+		['Guides', `https://steamcommunity.com/app/${steamAppId}/guides/`],
+		['Workshop', `https://steamcommunity.com/app/${steamAppId}/workshop/`],
+		['Support', `https://help.steampowered.com/en/wizard/HelpWithGame/?appid=${steamAppId}`],
 	].map(([label, url]) =>
-		`<a href="${url}" style="color:#8f98a0;text-decoration:none;font-size:13px;padding:6px 16px;transition:color 0.1s;"
+		`<a href="#" onclick="window.gdlOpen('${url}');return false;" style="color:#8f98a0;text-decoration:none;font-size:13px;padding:6px 16px;transition:color 0.1s;"
 		    onmouseover="this.style.color='#fff'" onmouseout="this.style.color='#8f98a0'">${label}</a>`
 	).join('');
 

@@ -194,7 +194,13 @@ end
 
 function fetch_partner_events(steam_app_id, language)
     local appid = tostring(steam_app_id)
-    local lang = tostring(language or "english"):gsub("[^%w_]", "")
+    local lang = tostring(language or "english")
+    -- Some Millennium builds (seen on Linux) map named JS arguments onto Lua
+    -- positionals in a different order; detect the swap and undo it
+    if not appid:match("^%d+$") and lang:match("^%d+$") then
+        appid, lang = lang, appid
+    end
+    lang = lang:gsub("[^%w_]", "")
     if lang == "" then lang = "english" end
 
     -- The old ajaxgetpartnereventspage endpoint is gone; the news hub page
@@ -317,6 +323,11 @@ end
 function fetch_friend_review(steam_id64, steam_app_id)
     local sid = tostring(steam_id64):match("(%d+)") or ""
     local appid = tostring(steam_app_id):match("(%d+)") or ""
+    -- SteamID64s are 17 digits, appids far shorter; undo swapped arguments
+    -- (same Linux argument-order quirk as fetch_partner_events)
+    if #sid < 15 and #appid >= 15 then
+        sid, appid = appid, sid
+    end
     local key = sid .. "_" .. appid
     if review_cache[key] then return review_cache[key] end
 
