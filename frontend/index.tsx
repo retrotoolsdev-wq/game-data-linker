@@ -708,13 +708,14 @@ function eventTypeLabel(t: number): string {
 }
 
 async function getCommunityContent(steamAppId: string): Promise<CommunityContentItem[]> {
-	const cached = cacheGet<CommunityContentItem[]>('community_' + steamAppId);
+	// v2: v1 entries carry off-by-one links from the old card parser
+	const cached = cacheGet<CommunityContentItem[]>('community2_' + steamAppId);
 	if (cached) return cached;
 	try {
 		const json = await fetchCommunityContentBackend({ steam_app_id: steamAppId });
 		const parsed = JSON.parse(json);
 		const items = parsed.items || [];
-		if (items.length > 0) cacheSet('community_' + steamAppId, items);
+		if (items.length > 0) cacheSet('community2_' + steamAppId, items);
 		return items;
 	} catch (e) {
 		backendLog('Community content fetch error: ' + e);
@@ -2156,7 +2157,7 @@ async function tryInjectLibraryData(doc: Document): Promise<void> {
 		gameDataCache[steamAppId] = cachedData;
 		const cNews = cacheGet<NewsItem[]>('events3_' + steamAppId) || [];
 		const cFriends = cacheGet<FriendCategories>('friends_' + steamAppId) || null;
-		const cCommunity = cacheGet<CommunityContentItem[]>('community_' + steamAppId) || [];
+		const cCommunity = cacheGet<CommunityContentItem[]>('community2_' + steamAppId) || [];
 		injectGameData(doc, notice, cachedData, steamAppId, cNews, cFriends, cCommunity);
 		renderedFromCache = true;
 		cacheMissedSections = cNews.length === 0 || !cFriends || cCommunity.length === 0;

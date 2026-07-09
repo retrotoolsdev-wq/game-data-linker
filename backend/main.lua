@@ -503,14 +503,18 @@ local function parse_hub_cards(html, fallback_type, items)
             item.author_name = item.author_name:gsub("&amp;", "&"):gsub("&#39;", "'"):gsub("%s+$", "")
         end
 
-        -- Link from data-modal-content-url on the card div
-        item.link = card:match('data%-modal%-content%-url="([^"]*)"')
-        -- Also search backward from card_start for the data-modal-content-url on the same card div
-        if not item.link then
-            -- The id= is after data-modal-content-url in the HTML, so check preceding text
-            local prefix_start = (card_start > 500) and (card_start - 500) or 1
-            local prefix = html:sub(prefix_start, card_start + 50)
-            item.link = prefix:match('data%-modal%-content%-url="([^"]*)"[^>]*' .. DELIM)
+        -- Link from data-modal-content-url: it sits on the card's OPENING tag
+        -- before the id attribute, so it is NOT inside this chunk - the next
+        -- card's link is, which used to send clicks to the neighboring item.
+        -- Search backward from this card's id and take the closest match.
+        item.link = nil
+        local window_start = (card_start > 3000) and (card_start - 3000) or 1
+        local window = html:sub(window_start, card_start)
+        for m in window:gmatch('data%-modal%-content%-url="([^"]*)"') do
+            item.link = m
+        end
+        if item.link then
+            item.link = item.link:gsub("&amp;", "&")
         end
 
         if item.image and item.image ~= "" then
