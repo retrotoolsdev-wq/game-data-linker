@@ -1,6 +1,6 @@
 # Game Data Linker
 
-A [Millennium](https://steambrew.app/) plugin that makes non-Steam games look and feel like real Steam games. Link any non-Steam shortcut to a Steam AppID and its library page fills with that game's real data - artwork, news, friend activity, achievements, community content, and more.
+A [Millennium](https://steambrew.app/) plugin that makes non-Steam games look and feel like real Steam games. Link any non-Steam shortcut to a **Steam AppID, an Epic Games store link, or an Xbox store link** and its library page fills with that game's real data - artwork, news, patch notes, friend activity, achievements, community content, and more.
 
 [![ko-fi](https://img.shields.io/badge/Support%20on-Ko--fi-FF5E5B?logo=ko-fi&logoColor=white)](https://ko-fi.com/retrotools)
 
@@ -14,6 +14,7 @@ A [Millennium](https://steambrew.app/) plugin that makes non-Steam games look an
 - **Friends who play** - avatars and names of friends who own the linked game
 - **Community content** - top screenshots, artwork, and guides from the community hub
 - **Pixel-accurate** - injected UI uses Steam's own CSS classes (resolved at runtime), so it matches the native library pages exactly and follows your Steam language
+- **Epic Games & Xbox** - link Epic and Xbox games too. Sign in with your Epic or Xbox account to show friends who play; Xbox also shows real friend avatars/gamertags and your actual achievement progress. Patch notes and clean transparent logos are pulled in automatically
 
 ## Installation
 
@@ -28,10 +29,19 @@ A [Millennium](https://steambrew.app/) plugin that makes non-Steam games look an
 
 1. Add a non-Steam game to your library as usual (Add a Game → Add a Non-Steam Game)
 2. Right-click it → **Properties**
-3. In the **Linked Steam AppID** section, paste the game's AppID or its store page link (e.g. `https://store.steampowered.com/app/4000/Garrys_Mod/`) and hit **Save**
+3. In the **Linked Game** section, paste any of the following and hit **Save**:
+   - a Steam AppID or store link (e.g. `https://store.steampowered.com/app/4000/Garrys_Mod/`)
+   - an Epic Games store link (e.g. `https://store.epicgames.com/p/alan-wake-2`)
+   - an Xbox store link (e.g. `https://www.xbox.com/games/store/sea-of-thieves/9p2n57mc619k`)
 4. Open the game's library page - artwork and data apply automatically
 
 Use **Clear** in the same Properties section to unlink and remove the custom artwork.
+
+### Epic Games & Xbox
+
+- **Epic** - the first time you link an Epic game you'll be prompted to sign in with your Epic account (used to list friends who play). Game data and artwork work without signing in.
+- **Xbox** - sign in with your Microsoft / Xbox account via a one-time device code (`microsoft.com/link`) to show your real friends and achievement progress.
+- **SteamGridDB key** - Epic and Xbox don't provide clean transparent logos, so linking your first Xbox game asks once for a free [SteamGridDB](https://www.steamgriddb.com/) API key (Preferences → API). It's stored locally and reused after that.
 
 ## Building from source
 

@@ -10,6 +10,688 @@ const fetchFriendPersonasBackend = callable<[{ steam_ids_csv: string }], string>
 const fetchCommunityContentBackend = callable<[{ steam_app_id: string }], string>('fetch_community_content');
 const feLogBackend         = callable<[{ msg: string }], string>('fe_log');
 
+// ── Epic Games Store backend callables ─────────────────────────────────
+const epicStatus           = callable<[], string>('epic_status');
+const epicLoginUrlBackend  = callable<[], string>('epic_login_url');
+const epicExchangeCode     = callable<[{ code: string }], string>('epic_exchange_code');
+const epicLogout           = callable<[], string>('epic_logout');
+const epicResolveBackend   = callable<[{ query: string }], string>('epic_resolve');
+const epicGameDataBackend  = callable<[{ offer_id: string }], string>('epic_game_data');
+const epicFriendsBackend   = callable<[], string>('epic_friends');
+const epicSaveArtworkBackend = callable<[{ payload: string }], string>('epic_save_artwork');
+const clearArtworkBackend  = callable<[{ shortcut_app_id: string }], string>('clear_artwork');
+const epicNewsBackend      = callable<[{ game_name: string }], string>('epic_news');
+const epicCommunityBackend = callable<[{ game_name: string }], string>('epic_community');
+// Cross-platform patch notes: resolves the game on Steam and returns its real
+// update events (native event_type + cover art) for both Epic and Xbox games.
+const patchNotesBackend    = callable<[{ game_name: string }], string>('cross_platform_patch_notes');
+
+// ── Xbox backend callables ─────────────────────────────────────────────
+const xboxStatus           = callable<[], string>('xbox_status');
+const xboxDeviceStart      = callable<[], string>('xbox_device_start');
+const xboxDevicePoll       = callable<[{ device_code: string }], string>('xbox_device_poll');
+const xboxLogout           = callable<[], string>('xbox_logout');
+const xboxGameDataBackend  = callable<[{ product_id: string }], string>('xbox_game_data');
+const xboxFriendsBackend   = callable<[], string>('xbox_friends');
+// SteamGridDB (required for clean transparent logos on Xbox games).
+const steamgriddbStatus    = callable<[], string>('steamgriddb_status');
+const setSteamgriddbKey    = callable<[{ key: string }], string>('set_steamgriddb_key');
+
+// ── Epic mapping helpers ───────────────────────────────────────────────
+// Epic-linked games are stored in mappings.json with the value form
+// "epic:<offerId>|<namespace>" so the existing per-title persistence and the
+// Steam numeric-appid path stay untouched.
+interface EpicMapping { offerId: string; namespace: string; }
+
+function parseEpicMapping(value: string | null): EpicMapping | null {
+	if (!value || value.slice(0, 5) !== 'epic:') return null;
+	const rest = value.slice(5);
+	const bar = rest.indexOf('|');
+	if (bar < 0) return { offerId: rest, namespace: '' };
+	return { offerId: rest.slice(0, bar), namespace: rest.slice(bar + 1) };
+}
+
+function isEpicUrl(s: string): boolean {
+	return /epicgames\.com/i.test(s);
+}
+
+interface EpicAchievement { name: string; desc: string; icon: string; xp: number; percent: number; hidden: boolean; unlocked?: boolean; }
+interface EpicFriend { id: string; name: string; avatar: string; }
+// Shared shape for every non-Steam platform (Epic + Xbox). Xbox fills the
+// optional fields: store_url for the link bar, unlocked_achievements for the
+// user's real progress (Epic only exposes global rarity).
+interface EpicGameData {
+	id: string; namespace: string; title: string; description: string;
+	developer: string; publisher: string; release: string; slug: string;
+	tall: string; wide: string; logo: string; screenshots?: string[];
+	achievements: EpicAchievement[]; total_achievements: number;
+	platform?: string; store_url?: string; unlocked_achievements?: number;
+}
+
+const epicDataCache: Record<string, EpicGameData | null> = {};
+const epicArtworkApplied = new Set<string>();
+
+async function getEpicGameData(offerId: string): Promise<EpicGameData | null> {
+	if (epicDataCache[offerId] !== undefined) return epicDataCache[offerId];
+	const cached = cacheGet<EpicGameData>('epicdata4_' +offerId);
+	if (cached) { epicDataCache[offerId] = cached; return cached; }
+	try {
+		const data = JSON.parse(await epicGameDataBackend({ offer_id: offerId }));
+		if ((data as any).error) { epicDataCache[offerId] = null; return null; }
+		// Empty Lua tables serialize as {} not [] — normalize to a real array.
+		if (!Array.isArray(data.achievements)) data.achievements = [];
+		epicDataCache[offerId] = data;
+		cacheSet('epicdata4_' +offerId, data);
+		return data;
+	} catch (e) {
+		backendLog('Epic game data fetch failed for ' + offerId + ': ' + e);
+		epicDataCache[offerId] = null;
+		return null;
+	}
+}
+
+async function getEpicFriends(): Promise<EpicFriend[]> {
+	const cached = cacheGet<EpicFriend[]>('epic_friends_v1');
+	if (cached) return cached;
+	try {
+		const res = JSON.parse(await epicFriendsBackend());
+		if ((res as any).error || !Array.isArray(res.friends)) return [];
+		const friends = res.friends as EpicFriend[];
+		cacheSet('epic_friends_v1', friends);
+		return friends;
+	} catch (e) {
+		backendLog('Epic friends fetch failed: ' + e);
+		return [];
+	}
+}
+
+async function getEpicNews(gameName: string): Promise<NewsItem[]> {
+	const key = 'epicnews_' + gameName.toLowerCase();
+	const cached = cacheGet<NewsItem[]>(key);
+	if (cached) return cached;
+	try {
+		const res = JSON.parse(await epicNewsBackend({ game_name: gameName }));
+		const items: NewsItem[] = Array.isArray(res.items) ? res.items : [];
+		cacheSet(key, items);
+		return items;
+	} catch (e) { backendLog('Epic news fetch failed: ' + e); return []; }
+}
+
+async function getEpicCommunity(gameName: string): Promise<CommunityContentItem[]> {
+	const key = 'epiccomm_' + gameName.toLowerCase();
+	const cached = cacheGet<CommunityContentItem[]>(key);
+	if (cached) return cached;
+	try {
+		const res = JSON.parse(await epicCommunityBackend({ game_name: gameName }));
+		const items: CommunityContentItem[] = Array.isArray(res.items) ? res.items : [];
+		cacheSet(key, items);
+		return items;
+	} catch (e) { backendLog('Epic community fetch failed: ' + e); return []; }
+}
+
+/** Real patch notes for an Epic/Xbox game, cross-referenced from its Steam
+ *  news hub (native event_type + cover art). Empty if the game isn't on Steam. */
+async function getPatchNotes(gameName: string): Promise<NewsItem[]> {
+	const key = 'patchnotes2_' + gameName.toLowerCase();
+	const cached = cacheGet<NewsItem[]>(key);
+	if (cached) return cached;
+	try {
+		const res = JSON.parse(await patchNotesBackend({ game_name: gameName }));
+		const items: NewsItem[] = Array.isArray(res.items) ? res.items : [];
+		cacheSet(key, items);
+		return items;
+	} catch (e) { backendLog('Patch notes fetch failed: ' + e); return []; }
+}
+
+/** Adapt Epic friends into the native Friends-who-play data + personas so the
+ *  real renderFriendsSection() renders them identically to a Steam game.
+ *  Epic exposes no avatars, so the Steam default avatar is used for all. */
+function epicFriendsToNative(friends: EpicFriend[]): { cats: FriendCategories; personas: FriendPersona[] } {
+	const previouslyPlayed: FriendPlayInfo[] = friends.map((f, i) => ({
+		steamid: 'epic_' + (f.id || i), minutes_played: 0, minutes_played_recently: 0,
+	}));
+	const personas: FriendPersona[] = friends.map((f, i) => ({
+		steamid: 'epic_' + (f.id || i), name: f.name || 'Epic Player', avatar: f.avatar || DEFAULT_AVATAR,
+	}));
+	return { cats: { recentlyPlayed: [], previouslyPlayed, totalCount: friends.length } as any, personas };
+}
+
+// ── Xbox mapping helpers ───────────────────────────────────────────────
+// Xbox-linked games store "xbox:<productId>" in mappings.json; the product id
+// (big id, e.g. 9MVXMVT8ZKWC) is right in the store URL, so no search needed.
+interface XboxMapping { productId: string; }
+
+function parseXboxMapping(value: string | null): XboxMapping | null {
+	if (!value || value.slice(0, 5) !== 'xbox:') return null;
+	return { productId: value.slice(5) };
+}
+
+/** Extract the 12-char Microsoft Store big id from a store URL. */
+function parseXboxProductId(s: string): string {
+	const m = s.match(/\/([9B][A-Z0-9]{11})(?:[\/?#]|$)/i) || s.match(/\b(9[A-Z0-9]{11})\b/i);
+	return m ? m[1].toUpperCase() : '';
+}
+
+function isXboxUrl(s: string): boolean {
+	return /(?:xbox|microsoft)\.com/i.test(s) && !!parseXboxProductId(s);
+}
+
+async function getXboxGameData(productId: string): Promise<EpicGameData | null> {
+	// Product ids (12 chars) can't collide with Epic offer ids (32-hex), so the
+	// in-memory cache is shared with the Epic path.
+	if (epicDataCache[productId] !== undefined) return epicDataCache[productId];
+	const cached = cacheGet<EpicGameData>('xboxdata3_' + productId);
+	if (cached) { epicDataCache[productId] = cached; return cached; }
+	try {
+		const data = JSON.parse(await xboxGameDataBackend({ product_id: productId }));
+		if ((data as any).error) { epicDataCache[productId] = null; return null; }
+		// Empty Lua tables serialize as {} not [] — normalize to real arrays.
+		if (!Array.isArray(data.achievements)) data.achievements = [];
+		if (!Array.isArray(data.screenshots)) data.screenshots = [];
+		epicDataCache[productId] = data;
+		cacheSet('xboxdata3_' + productId, data);
+		return data;
+	} catch (e) {
+		backendLog('Xbox game data fetch failed for ' + productId + ': ' + e);
+		epicDataCache[productId] = null;
+		return null;
+	}
+}
+
+async function getXboxFriends(): Promise<EpicFriend[]> {
+	const cached = cacheGet<EpicFriend[]>('xbox_friends_v1');
+	if (cached) return cached;
+	try {
+		const res = JSON.parse(await xboxFriendsBackend());
+		if ((res as any).error || !Array.isArray(res.friends)) return [];
+		const friends = res.friends as EpicFriend[];
+		cacheSet('xbox_friends_v1', friends);
+		return friends;
+	} catch (e) {
+		backendLog('Xbox friends fetch failed: ' + e);
+		return [];
+	}
+}
+
+/** After artwork is (re)applied, remount the game's library page so Steam
+ *  re-reads the new hero/logo/grid immediately — avoids the "click off and
+ *  back" step. Navigating to the same app the user is on is visually seamless. */
+function refreshLibraryArtwork(appId: number): void {
+	try {
+		const sc = (window as any).SteamClient;
+		if (sc?.URL?.ExecuteSteamURL) { sc.URL.ExecuteSteamURL('steam://nav/games/details/' + appId); return; }
+	} catch {}
+	// Fallback: re-run our own injection so at least the content refreshes.
+	try { if (mainWindowDoc) { currentInjectedAppId = null; cleanupInjection(mainWindowDoc); tryInjectLibraryData(mainWindowDoc); } } catch {}
+}
+
+/** Open a URL in the user's real system web browser (not the in-client view).
+ *  The Epic sign-in redirect page shows the code as plain text on a black
+ *  background inside Steam, which is easy to miss — the system browser renders
+ *  it normally. */
+function openExternal(url: string): void {
+	try {
+		const sys = (window as any).SteamClient?.System;
+		if (sys && typeof sys.OpenInSystemBrowser === 'function') { sys.OpenInSystemBrowser(url); return; }
+	} catch {}
+	try { window.open('steam://openurl/' + url); } catch {}
+}
+
+/** Entry point from the properties Save handler when an Epic link is pasted. */
+async function handleEpicLink(val: string, titleKey: string, input: HTMLInputElement, statusEl: HTMLElement, section: HTMLElement): Promise<void> {
+	statusEl.style.color = '#8f98a0';
+	statusEl.textContent = 'Checking Epic Games account...';
+	let st: any = {};
+	try { st = JSON.parse(await epicStatus()); } catch {}
+	if (!st.logged_in) {
+		statusEl.textContent = '';
+		showEpicLoginPrompt(val, titleKey, input, statusEl, section);
+		return;
+	}
+	await finishEpicLink(val, titleKey, input, statusEl, section);
+	// Offer a way to switch Epic accounts once linked.
+	showEpicAccountFooter(st.display_name || '', statusEl, section);
+}
+
+/** Small "signed in as X — switch account" footer under the linked status. */
+function showEpicAccountFooter(displayName: string, statusEl: HTMLElement, section: HTMLElement): void {
+	const old = section.querySelector('.gdl-epic-footer');
+	if (old) old.remove();
+	const d = section.ownerDocument || document;
+	const footer = d.createElement('div');
+	footer.className = 'gdl-epic-footer';
+	footer.style.cssText = 'font-size:11px;color:#6c7580;margin-top:8px;';
+	footer.innerHTML = `Epic account${displayName ? ' <span style="color:#8f98a0;">' + escapeHtml(displayName) + '</span>' : ''} linked. <a href="#" class="gdl-epic-switch" style="color:#1a9fff;text-decoration:none;">Switch account</a>`;
+	section.appendChild(footer);
+	const switchLink = footer.querySelector('.gdl-epic-switch') as HTMLAnchorElement;
+	switchLink.addEventListener('click', async (e) => {
+		e.preventDefault();
+		try { await epicLogout(); } catch {}
+		try { localStorage.removeItem(CACHE_PREFIX + 'epic_friends_v1'); } catch {}
+		footer.remove();
+		statusEl.style.color = '#8f98a0';
+		statusEl.textContent = 'Epic account unlinked. Paste the link again to sign in with a different account.';
+	});
+}
+
+/** Prompt the user to link their Epic account (open sign-in, paste code). */
+function showEpicLoginPrompt(val: string, titleKey: string, input: HTMLInputElement, statusEl: HTMLElement, section: HTMLElement): void {
+	const existing = section.querySelector('.gdl-epic-login');
+	if (existing) existing.remove();
+
+	const d = section.ownerDocument || document;
+	const btn = 'padding:7px 14px;border:none;border-radius:3px;font-size:12px;font-weight:500;cursor:pointer;';
+	const panel = d.createElement('div');
+	panel.className = 'gdl-epic-login';
+	panel.style.cssText = 'margin-top:12px;padding:14px;background:rgba(0,0,0,0.25);border:1px solid rgba(255,255,255,0.08);border-radius:4px;';
+	panel.innerHTML = `
+		<div style="font-size:12px;color:#dcdedf;margin-bottom:4px;font-weight:600;">Link your Epic Games account</div>
+		<div style="font-size:11px;color:#8f98a0;margin-bottom:10px;line-height:1.5;">
+			1. Click <b>Log in with Epic</b> — it opens in your web browser.<br/>
+			2. After signing in you'll see a code like <span style="color:#c7d5e0;">{"authorizationCode":"abc123..."}</span>.<br/>
+			3. Copy just the code, paste it below, and press Continue (it expires after a few minutes, so be quick).
+		</div>
+		<div style="display:flex;gap:8px;align-items:center;margin-bottom:10px;">
+			<button class="gdl-epic-open" style="${btn}background:#2a2a2a;color:#fff;border:1px solid rgba(255,255,255,0.15);">Log in with Epic</button>
+		</div>
+		<input class="gdl-epic-code" type="text" placeholder="Paste authorizationCode here"
+			style="width:100%;box-sizing:border-box;padding:8px 12px;background:rgba(0,0,0,0.35);border:1px solid rgba(255,255,255,0.1);border-radius:3px;color:#dcdedf;font-size:13px;outline:none;" />
+		<div style="display:flex;gap:8px;margin-top:10px;">
+			<button class="gdl-epic-continue" style="${btn}background:#1a9fff;color:#fff;">Continue</button>
+			<button class="gdl-epic-cancel" style="${btn}background:rgba(255,255,255,0.06);color:#8f98a0;">Cancel</button>
+		</div>
+		<div class="gdl-epic-substatus" style="font-size:11px;color:#8f98a0;margin-top:8px;min-height:14px;"></div>
+	`;
+	section.appendChild(panel);
+
+	const openBtn = panel.querySelector('.gdl-epic-open') as HTMLButtonElement;
+	const codeInput = panel.querySelector('.gdl-epic-code') as HTMLInputElement;
+	const continueBtn = panel.querySelector('.gdl-epic-continue') as HTMLButtonElement;
+	const cancelBtn = panel.querySelector('.gdl-epic-cancel') as HTMLButtonElement;
+	const sub = panel.querySelector('.gdl-epic-substatus') as HTMLElement;
+
+	openBtn.addEventListener('click', async () => {
+		try {
+			const { url } = JSON.parse(await epicLoginUrlBackend());
+			openExternal(url);
+			sub.style.color = '#8f98a0';
+			sub.textContent = 'Sign in, then copy the authorizationCode and paste it above.';
+		} catch { sub.style.color = '#ff6b6b'; sub.textContent = 'Could not open the Epic sign-in page.'; }
+	});
+
+	continueBtn.addEventListener('click', async () => {
+		const code = codeInput.value.trim();
+		if (!code) { sub.style.color = '#ff6b6b'; sub.textContent = 'Paste the code first.'; return; }
+		sub.style.color = '#8f98a0';
+		sub.textContent = 'Linking account...';
+		let res: any = {};
+		try { res = JSON.parse(await epicExchangeCode({ code })); } catch { res = { error: 'network' }; }
+		if (res.ok) {
+			panel.remove();
+			statusEl.style.color = '#5ba32b';
+			statusEl.textContent = `✓ Signed in as ${res.display_name || 'Epic user'}.`;
+			await finishEpicLink(val, titleKey, input, statusEl, section);
+		} else {
+			sub.style.color = '#ff6b6b';
+			sub.textContent = res.status === 400 || res.error === 'auth_failed'
+				? 'That code was invalid or expired. Try logging in again.'
+				: 'Sign-in failed. Please try again.';
+		}
+	});
+
+	cancelBtn.addEventListener('click', () => panel.remove());
+}
+
+/** Resolve the Epic game, persist the mapping, and set artwork. */
+async function finishEpicLink(val: string, titleKey: string, input: HTMLInputElement, statusEl: HTMLElement, section: HTMLElement): Promise<void> {
+	const loginPanel = section.querySelector('.gdl-epic-login');
+	if (loginPanel) loginPanel.remove();
+
+	statusEl.style.color = '#8f98a0';
+	statusEl.textContent = 'Finding game on Epic Games...';
+	let resolved: any = {};
+	try { resolved = JSON.parse(await epicResolveBackend({ query: val })); } catch { resolved = { error: 'network' }; }
+	if (resolved.error || !resolved.id) {
+		statusEl.style.color = '#ff6b6b';
+		statusEl.textContent = 'Could not find this game on the Epic Games Store.';
+		return;
+	}
+
+	const value = 'epic:' + resolved.id + '|' + (resolved.namespace || '');
+	try {
+		await saveMappingBackend({ non_steam_id: titleKey, steam_id: value });
+		mappings[titleKey] = value;
+		input.value = 'Epic: ' + resolved.title;
+		statusEl.style.color = '#5ba32b';
+		statusEl.textContent = `✓ Linked to "${resolved.title}". Setting artwork...`;
+
+		const gd = await getEpicGameData(resolved.id);
+		const shortcutId = findShortcutAppIdByName(titleKey);
+		if (gd && shortcutId) {
+			epicArtworkApplied.add('epic:' + resolved.id + '|' + (resolved.namespace || ''));
+			spoofEpicArtwork(shortcutId, gd).then(() => {
+				statusEl.textContent = `✓ Linked to "${resolved.title}". Artwork saved.`;
+				refreshLibraryArtwork(shortcutId);
+			}).catch(() => {
+				statusEl.textContent = `✓ Linked to "${resolved.title}". Some artwork may not have been set.`;
+			});
+		} else if (!shortcutId) {
+			statusEl.textContent = `✓ Linked to "${resolved.title}". Open the game's library page to apply artwork.`;
+		}
+
+		if (mainWindowDoc) {
+			currentInjectedAppId = null;
+			cleanupInjection(mainWindowDoc);
+			tryInjectLibraryData(mainWindowDoc);
+		}
+	} catch (e) {
+		statusEl.style.color = '#ff6b6b';
+		statusEl.textContent = 'Failed to save the Epic link.';
+		backendLog('Epic save error: ' + e);
+	}
+}
+
+/** Download Epic key images to the grid folder (backend) and set them live. */
+async function spoofEpicArtwork(shortcutAppId: number, gd: EpicGameData): Promise<void> {
+	// Persist real files to the grid folder – Epic CDN isn't CORS-limited from
+	// the Lua backend, so this path always works and survives restarts.
+	try {
+		await epicSaveArtworkBackend({ payload: JSON.stringify({
+			shortcut_app_id: String(shortcutAppId),
+			tall: gd.tall, wide: gd.wide, logo: gd.logo, hero: gd.wide,
+		}) });
+	} catch (e) { backendLog('epic_save_artwork failed: ' + e); }
+
+	// Also try to set instantly via SteamClient so the tile updates without a
+	// restart. May be skipped if the Epic CDN blocks a cross-origin blob read.
+	const sc = (window as any).SteamClient;
+	if (typeof sc?.Apps?.SetCustomArtworkForApp !== 'function') return;
+	const sources: [string, number][] = [
+		[gd.tall, 0], [gd.wide, 1], [gd.logo, 2], [gd.wide, 3],
+	];
+	for (const [url, imageType] of sources) {
+		if (!url) continue;
+		try {
+			const dataUrl = await imageUrlToBase64(url);
+			if (!dataUrl) continue;
+			const base64Data = dataUrl.substring(dataUrl.indexOf(',') + 1);
+			const ext = url.toLowerCase().indexOf('.png') >= 0 ? 'png' : 'jpg';
+			try { await sc.Apps.ClearCustomArtworkForApp(shortcutAppId, imageType); } catch {}
+			await new Promise(r => setTimeout(r, 150));
+			await sc.Apps.SetCustomArtworkForApp(shortcutAppId, base64Data, ext, imageType);
+		} catch {}
+	}
+}
+
+/** Entry point from the properties Save handler when an Xbox link is pasted. */
+async function handleXboxLink(val: string, titleKey: string, input: HTMLInputElement, statusEl: HTMLElement, section: HTMLElement): Promise<void> {
+	// A SteamGridDB API key is REQUIRED before linking Xbox games — it's the
+	// only reliable source of a clean transparent logo (Xbox stores only box
+	// art). Each user supplies their own key (they're per-account).
+	statusEl.style.color = '#8f98a0';
+	statusEl.textContent = 'Checking requirements...';
+	let sg: any = {};
+	try { sg = JSON.parse(await steamgriddbStatus()); } catch {}
+	if (!sg.has_key) {
+		statusEl.textContent = '';
+		showSteamGridDbKeyPrompt(val, titleKey, input, statusEl, section);
+		return;
+	}
+
+	statusEl.style.color = '#8f98a0';
+	statusEl.textContent = 'Checking Xbox account...';
+	let st: any = {};
+	try { st = JSON.parse(await xboxStatus()); } catch {}
+	if (!st.logged_in) {
+		statusEl.textContent = '';
+		showXboxLoginPrompt(val, titleKey, input, statusEl, section);
+		return;
+	}
+	await finishXboxLink(val, titleKey, input, statusEl, section);
+	showXboxAccountFooter(st.display_name || '', statusEl, section);
+}
+
+/** Small "signed in as X — switch account" footer under the linked status. */
+function showXboxAccountFooter(displayName: string, statusEl: HTMLElement, section: HTMLElement): void {
+	const old = section.querySelector('.gdl-xbox-footer');
+	if (old) old.remove();
+	const d = section.ownerDocument || document;
+	const footer = d.createElement('div');
+	footer.className = 'gdl-xbox-footer';
+	footer.style.cssText = 'font-size:11px;color:#6c7580;margin-top:8px;';
+	footer.innerHTML = `Xbox account${displayName ? ' <span style="color:#8f98a0;">' + escapeHtml(displayName) + '</span>' : ''} linked. <a href="#" class="gdl-xbox-switch" style="color:#1a9fff;text-decoration:none;">Switch account</a>`;
+	section.appendChild(footer);
+	const switchLink = footer.querySelector('.gdl-xbox-switch') as HTMLAnchorElement;
+	switchLink.addEventListener('click', async (e) => {
+		e.preventDefault();
+		try { await xboxLogout(); } catch {}
+		try { localStorage.removeItem(CACHE_PREFIX + 'xbox_friends_v1'); } catch {}
+		footer.remove();
+		statusEl.style.color = '#8f98a0';
+		statusEl.textContent = 'Xbox account unlinked. Paste the link again to sign in with a different account.';
+	});
+}
+
+/** Required first step for Xbox: collect the user's SteamGridDB API key (the
+ *  source of clean transparent logos). Validated by the backend before saving;
+ *  on success it continues into the normal Xbox link flow. */
+function showSteamGridDbKeyPrompt(val: string, titleKey: string, input: HTMLInputElement, statusEl: HTMLElement, section: HTMLElement): void {
+	const existing = section.querySelector('.gdl-sgdb-key');
+	if (existing) existing.remove();
+
+	const d = section.ownerDocument || document;
+	const btn = 'padding:7px 14px;border:none;border-radius:3px;font-size:12px;font-weight:500;cursor:pointer;';
+	const panel = d.createElement('div');
+	panel.className = 'gdl-sgdb-key';
+	panel.style.cssText = 'margin-top:12px;padding:14px;background:rgba(0,0,0,0.25);border:1px solid rgba(255,255,255,0.08);border-radius:4px;';
+	panel.innerHTML = `
+		<div style="font-size:12px;color:#dcdedf;margin-bottom:4px;font-weight:600;">SteamGridDB API key required</div>
+		<div style="font-size:11px;color:#8f98a0;margin-bottom:10px;line-height:1.6;">
+			Xbox doesn't provide clean game logos, so linking Xbox games needs a free
+			<b>SteamGridDB</b> key (one-time setup).<br/>
+			1. Click <b>Open SteamGridDB</b> and sign in (you can use Steam).<br/>
+			2. Go to <b>Preferences → API</b> and <b>Generate API Key</b>.<br/>
+			3. Paste it below and press Save.
+		</div>
+		<div style="display:flex;gap:8px;align-items:center;margin-bottom:10px;">
+			<button class="gdl-sgdb-open" style="${btn}background:#2a2a2a;color:#fff;border:1px solid rgba(255,255,255,0.15);">Open SteamGridDB</button>
+		</div>
+		<input class="gdl-sgdb-input" type="text" placeholder="Paste your SteamGridDB API key"
+			style="width:100%;box-sizing:border-box;padding:8px 12px;background:rgba(0,0,0,0.35);border:1px solid rgba(255,255,255,0.1);border-radius:3px;color:#dcdedf;font-size:13px;outline:none;" />
+		<div style="display:flex;gap:8px;margin-top:10px;">
+			<button class="gdl-sgdb-save" style="${btn}background:#1a9fff;color:#fff;">Save key</button>
+			<button class="gdl-sgdb-cancel" style="${btn}background:rgba(255,255,255,0.06);color:#8f98a0;">Cancel</button>
+		</div>
+		<div class="gdl-sgdb-substatus" style="font-size:11px;color:#8f98a0;margin-top:8px;min-height:14px;"></div>
+	`;
+	section.appendChild(panel);
+
+	const openBtn = panel.querySelector('.gdl-sgdb-open') as HTMLButtonElement;
+	const keyInput = panel.querySelector('.gdl-sgdb-input') as HTMLInputElement;
+	const saveBtn = panel.querySelector('.gdl-sgdb-save') as HTMLButtonElement;
+	const cancelBtn = panel.querySelector('.gdl-sgdb-cancel') as HTMLButtonElement;
+	const sub = panel.querySelector('.gdl-sgdb-substatus') as HTMLElement;
+
+	openBtn.addEventListener('click', () => openExternal('https://www.steamgriddb.com/profile/preferences/api'));
+
+	saveBtn.addEventListener('click', async () => {
+		const key = keyInput.value.trim();
+		if (!key) { sub.style.color = '#ff6b6b'; sub.textContent = 'Paste your API key first.'; return; }
+		sub.style.color = '#8f98a0';
+		sub.textContent = 'Validating key...';
+		let res: any = {};
+		try { res = JSON.parse(await setSteamgriddbKey({ key })); } catch { res = { error: 'network' }; }
+		if (res.ok && res.has_key) {
+			panel.remove();
+			// Key is set — continue the normal Xbox link flow.
+			await handleXboxLink(val, titleKey, input, statusEl, section);
+		} else {
+			sub.style.color = '#ff6b6b';
+			sub.textContent = res.error === 'invalid_key'
+				? 'That key was rejected by SteamGridDB. Double-check it and try again.'
+				: 'Could not save the key. Please try again.';
+		}
+	});
+
+	cancelBtn.addEventListener('click', () => panel.remove());
+}
+
+/** Prompt the user to link their Xbox account via the Microsoft device code
+ *  flow: show a short code, they enter it at microsoft.com/link, we poll. */
+function showXboxLoginPrompt(val: string, titleKey: string, input: HTMLInputElement, statusEl: HTMLElement, section: HTMLElement): void {
+	const existing = section.querySelector('.gdl-xbox-login');
+	if (existing) existing.remove();
+
+	const d = section.ownerDocument || document;
+	const btn = 'padding:7px 14px;border:none;border-radius:3px;font-size:12px;font-weight:500;cursor:pointer;';
+	const panel = d.createElement('div');
+	panel.className = 'gdl-xbox-login';
+	panel.style.cssText = 'margin-top:12px;padding:14px;background:rgba(0,0,0,0.25);border:1px solid rgba(255,255,255,0.08);border-radius:4px;';
+	panel.innerHTML = `
+		<div style="font-size:12px;color:#dcdedf;margin-bottom:4px;font-weight:600;">Link your Xbox account</div>
+		<div class="gdl-xbox-steps" style="font-size:11px;color:#8f98a0;margin-bottom:10px;line-height:1.6;">
+			Getting your sign-in code…
+		</div>
+		<div class="gdl-xbox-codebox" style="display:none;margin:4px 0 12px;">
+			<div style="font-size:11px;color:#8f98a0;margin-bottom:6px;">Enter this code at <span style="color:#c7d5e0;">microsoft.com/link</span>:</div>
+			<div class="gdl-xbox-usercode" style="font-size:26px;font-weight:700;letter-spacing:4px;color:#fff;font-family:monospace;user-select:all;">--------</div>
+		</div>
+		<div style="display:flex;gap:8px;align-items:center;margin-bottom:6px;">
+			<button class="gdl-xbox-open" style="${btn}background:#107c10;color:#fff;display:none;">Open microsoft.com/link</button>
+			<button class="gdl-xbox-copy" style="${btn}background:rgba(255,255,255,0.08);color:#dcdedf;display:none;">Copy code</button>
+			<button class="gdl-xbox-skip" style="${btn}background:rgba(255,255,255,0.06);color:#8f98a0;">Skip sign-in</button>
+			<button class="gdl-xbox-cancel" style="${btn}background:rgba(255,255,255,0.06);color:#8f98a0;">Cancel</button>
+		</div>
+		<div class="gdl-xbox-substatus" style="font-size:11px;color:#8f98a0;margin-top:8px;min-height:14px;"></div>
+	`;
+	section.appendChild(panel);
+
+	const steps = panel.querySelector('.gdl-xbox-steps') as HTMLElement;
+	const codeBox = panel.querySelector('.gdl-xbox-codebox') as HTMLElement;
+	const codeEl = panel.querySelector('.gdl-xbox-usercode') as HTMLElement;
+	const openBtn = panel.querySelector('.gdl-xbox-open') as HTMLButtonElement;
+	const copyBtn = panel.querySelector('.gdl-xbox-copy') as HTMLButtonElement;
+	const skipBtn = panel.querySelector('.gdl-xbox-skip') as HTMLButtonElement;
+	const cancelBtn = panel.querySelector('.gdl-xbox-cancel') as HTMLButtonElement;
+	const sub = panel.querySelector('.gdl-xbox-substatus') as HTMLElement;
+
+	let cancelled = false;
+	let pollTimer: any = null;
+	const cleanup = () => { cancelled = true; if (pollTimer) clearTimeout(pollTimer); };
+	cancelBtn.addEventListener('click', () => { cleanup(); panel.remove(); });
+	// Game info works without an account — only friends/achievements need it.
+	skipBtn.addEventListener('click', async () => { cleanup(); panel.remove(); await finishXboxLink(val, titleKey, input, statusEl, section); });
+
+	(async () => {
+		let start: any = {};
+		try { start = JSON.parse(await xboxDeviceStart()); } catch { start = { error: 'network' }; }
+		if (cancelled) return;
+		if (start.error || !start.device_code) {
+			steps.textContent = '';
+			sub.style.color = '#ff6b6b';
+			sub.textContent = 'Could not start Microsoft sign-in. Please try again.';
+			return;
+		}
+
+		const verifyUrl = start.verification_uri || 'https://www.microsoft.com/link';
+		codeEl.textContent = start.user_code || '--------';
+		codeBox.style.display = 'block';
+		openBtn.style.display = '';
+		copyBtn.style.display = '';
+		steps.innerHTML = `1. Click <b>Open microsoft.com/link</b> (opens your browser).<br/>2. Sign in and enter the code above.<br/>3. Come back here — it links automatically.`;
+		sub.style.color = '#8f98a0';
+		sub.textContent = 'Waiting for you to finish signing in…';
+
+		openBtn.addEventListener('click', () => openExternal(verifyUrl));
+		copyBtn.addEventListener('click', () => {
+			try { (d.defaultView as any)?.navigator?.clipboard?.writeText(start.user_code); copyBtn.textContent = 'Copied!'; setTimeout(() => { copyBtn.textContent = 'Copy code'; }, 1500); } catch {}
+		});
+
+		const interval = Math.max(3, Number(start.interval) || 5) * 1000;
+		const deadline = Date.now() + (Number(start.expires_in) || 900) * 1000;
+
+		const poll = async () => {
+			if (cancelled) return;
+			if (Date.now() > deadline) { sub.style.color = '#ff6b6b'; sub.textContent = 'The code expired. Close and try again.'; return; }
+			let res: any = {};
+			try { res = JSON.parse(await xboxDevicePoll({ device_code: start.device_code })); } catch { res = { pending: true }; }
+			if (cancelled) return;
+			if (res.ok) {
+				cleanup();
+				panel.remove();
+				statusEl.style.color = '#5ba32b';
+				statusEl.textContent = `✓ Signed in as ${res.display_name || 'Xbox user'}.`;
+				await finishXboxLink(val, titleKey, input, statusEl, section);
+				showXboxAccountFooter(res.display_name || '', statusEl, section);
+				return;
+			}
+			if (res.error && res.error !== 'authorization_pending' && res.error !== 'slow_down') {
+				sub.style.color = '#ff6b6b';
+				sub.textContent = res.error === 'authorization_declined'
+					? 'Sign-in was declined. Close and try again.'
+					: 'Sign-in failed (' + res.error + '). Close and try again.';
+				return;
+			}
+			pollTimer = setTimeout(poll, interval);
+		};
+		pollTimer = setTimeout(poll, interval);
+	})();
+}
+
+/** Look up the Xbox product, persist the mapping, and set artwork. */
+async function finishXboxLink(val: string, titleKey: string, input: HTMLInputElement, statusEl: HTMLElement, section: HTMLElement): Promise<void> {
+	const loginPanel = section.querySelector('.gdl-xbox-login');
+	if (loginPanel) loginPanel.remove();
+
+	const productId = parseXboxProductId(val);
+	if (!productId) {
+		statusEl.style.color = '#ff6b6b';
+		statusEl.textContent = 'That Xbox link has no product id. Use a store page link like xbox.com/en-US/games/store/<name>/<id>.';
+		return;
+	}
+
+	statusEl.style.color = '#8f98a0';
+	statusEl.textContent = 'Finding game on the Xbox store...';
+	const gd = await getXboxGameData(productId);
+	if (!gd || !gd.title) {
+		statusEl.style.color = '#ff6b6b';
+		statusEl.textContent = 'Could not find this game on the Xbox store.';
+		return;
+	}
+
+	const value = 'xbox:' + productId;
+	try {
+		await saveMappingBackend({ non_steam_id: titleKey, steam_id: value });
+		mappings[titleKey] = value;
+		input.value = 'Xbox: ' + gd.title;
+		statusEl.style.color = '#5ba32b';
+		statusEl.textContent = `✓ Linked to "${gd.title}". Setting artwork...`;
+
+		const shortcutId = findShortcutAppIdByName(titleKey);
+		if (shortcutId) {
+			epicArtworkApplied.add(value);
+			spoofEpicArtwork(shortcutId, gd).then(() => {
+				statusEl.textContent = `✓ Linked to "${gd.title}". Artwork saved.`;
+				refreshLibraryArtwork(shortcutId);
+			}).catch(() => {
+				statusEl.textContent = `✓ Linked to "${gd.title}". Some artwork may not have been set.`;
+			});
+		} else {
+			statusEl.textContent = `✓ Linked to "${gd.title}". Open the game's library page to apply artwork.`;
+		}
+
+		if (mainWindowDoc) {
+			currentInjectedAppId = null;
+			cleanupInjection(mainWindowDoc);
+			tryInjectLibraryData(mainWindowDoc);
+		}
+	} catch (e) {
+		statusEl.style.color = '#ff6b6b';
+		statusEl.textContent = 'Failed to save the Xbox link.';
+		backendLog('Xbox save error: ' + e);
+	}
+}
+
 /** Log to Millennium backend console so messages appear in the Millennium log */
 function backendLog(msg: string): void {
 	console.log('[GDL]', msg);
@@ -519,7 +1201,11 @@ function tryInjectPropertiesField(doc: Document, popupTitle: string): void {
 	if (!gameTitle) return;
 
 	const titleKey = normalizeTitle(gameTitle);
-	const currentLinked = findMappingForTitle(gameTitle) || '';
+	const currentRaw = findMappingForTitle(gameTitle) || '';
+	const currentEpic = parseEpicMapping(currentRaw);
+	const currentXbox = parseXboxMapping(currentRaw);
+	// Platform mappings store an opaque token; show a friendly label instead.
+	const currentLinked = currentEpic ? '(Epic Games linked)' : currentXbox ? '(Xbox linked)' : currentRaw;
 
 	// Build UI section
 	const section = doc.createElement('div');
@@ -528,13 +1214,13 @@ function tryInjectPropertiesField(doc: Document, popupTitle: string): void {
 
 	section.innerHTML = `
 		<div style="font-size: 12px; font-weight: 500; color: #8f98a0; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 10px;">
-			Linked Steam AppID
+			Linked Game
 		</div>
 		<div style="font-size: 11px; color: #6c7580; margin-bottom: 12px;">
-			Enter a Steam AppID or store page link to display that game's info on this game's library page.
+			Paste a Steam AppID or store link, an Epic Games Store link, or an Xbox store link, to show that game's info on this library page.
 		</div>
 		<div style="display: flex; gap: 8px; align-items: center;">
-			<input class="gdl-appid-input" type="text" placeholder="e.g. 2947440 or store link"
+			<input class="gdl-appid-input" type="text" placeholder="Steam AppID, Epic Games, or Xbox store link"
 				value="${escapeHtml(currentLinked)}"
 				style="flex:1; padding:8px 12px; background:rgba(0,0,0,0.25); border:1px solid rgba(255,255,255,0.1); border-radius:3px; color:#dcdedf; font-size:13px; outline:none;" />
 			<button class="gdl-save-btn" style="padding:8px 18px; background:#1a9fff; border:none; border-radius:3px; color:#fff; font-size:12px; font-weight:500; cursor:pointer; white-space:nowrap;">Save</button>
@@ -554,6 +1240,10 @@ function tryInjectPropertiesField(doc: Document, popupTitle: string): void {
 		saveBtn.addEventListener('click', async () => {
 			let val = input.value.trim();
 			if (!val) { statusEl.textContent = 'Please enter an AppID or store link.'; return; }
+			// Epic Games Store link → separate account-link + egdata path
+			if (isEpicUrl(val)) { await handleEpicLink(val, titleKey, input, statusEl, section); return; }
+			// Xbox store link → Microsoft catalog + Xbox Live account path
+			if (isXboxUrl(val)) { await handleXboxLink(val, titleKey, input, statusEl, section); return; }
 			// Accept store/community links (e.g. https://store.steampowered.com/app/2947440/Name/)
 			const urlMatch = val.match(/(?:store\.steampowered\.com|steamcommunity\.com|steamdb\.info)\/app\/(\d+)/i)
 				|| val.match(/s\.team\/a\/(\d+)/i);
@@ -584,6 +1274,7 @@ function tryInjectPropertiesField(doc: Document, popupTitle: string): void {
 				if (shortcutId) {
 					spoofArtwork(shortcutId, val, true).then(() => {
 						statusEl.textContent = `âœ“ Linked to "${data.name}". All artwork saved.`;
+						refreshLibraryArtwork(shortcutId);
 					}).catch(() => {
 						statusEl.textContent = `âœ“ Linked to "${data.name}". Some artwork may not have been set.`;
 					});
@@ -622,6 +1313,9 @@ function tryInjectPropertiesField(doc: Document, popupTitle: string): void {
 					if (typeof apps?.ClearCustomArtworkForApp === 'function') {
 						for (let t = 0; t < 4; t++) apps.ClearCustomArtworkForApp(shortcutId, t);
 					}
+					// Epic links also write real image files into the grid folder;
+					// remove those so unlinking fully reverts the tile.
+					try { await clearArtworkBackend({ shortcut_app_id: String(shortcutId) }); } catch {}
 				}
 				// Auto-refresh the library page to remove injected content
 				if (mainWindowDoc) {
@@ -876,17 +1570,25 @@ function findShortcutAppIdByName(title: string): number | null {
 
 /** Fetch an image URL and return as base64 data URL string */
 async function imageUrlToBase64(url: string): Promise<string | null> {
-	try {
-		const resp = await fetch(url);
-		if (!resp.ok) return null;
-		const blob = await resp.blob();
-		return new Promise((resolve) => {
+	const attempt = (u: string): Promise<string | null> => new Promise(async (resolve) => {
+		try {
+			const resp = await fetch(u);
+			if (!resp.ok) { resolve(null); return; }
+			const blob = await resp.blob();
+			if (!blob || blob.size < 100) { resolve(null); return; }  // truncated/empty
 			const reader = new FileReader();
-			reader.onloadend = () => resolve(reader.result as string || null);
+			reader.onloadend = () => resolve((reader.result as string) || null);
 			reader.onerror = () => resolve(null);
 			reader.readAsDataURL(blob);
-		});
-	} catch { return null; }
+		} catch { resolve(null); }
+	});
+	const direct = await attempt(url);
+	if (direct) return direct;
+	// Some CDNs (notably SteamGridDB's cdn2.steamgriddb.com) send no CORS
+	// headers, so the browser blocks the direct fetch. Retry through a
+	// CORS-friendly image proxy that re-serves with Access-Control-Allow-Origin.
+	const proxied = 'https://wsrv.nl/?url=' + url.replace(/^https?:\/\//, '') + '&output=png';
+	return await attempt(proxied);
 }
 
 /** Artwork persistence key prefix in localStorage (v3 = uses file extension not mime type) */
@@ -2099,7 +2801,7 @@ function injectGameData(
 
 /** Remove all GDL-injected elements and restore hidden notices */
 function cleanupInjection(doc: Document): void {
-	for (const id of [GDL_INJECTED, 'gdl-skeleton', 'gdl-friends-section', 'gdl-achievements-section', 'gdl-playbar-achievements', 'gdl-link-bar', 'gdl-community-content', 'gdl-activity-feed']) {
+	for (const id of [GDL_INJECTED, 'gdl-skeleton', 'gdl-friends-section', 'gdl-achievements-section', 'gdl-playbar-achievements', 'gdl-link-bar', 'gdl-community-content', 'gdl-activity-feed', 'gdl-epic-content']) {
 		const el = doc.getElementById(id);
 		if (el) el.remove();
 	}
@@ -2170,6 +2872,459 @@ function insertSkeleton(doc: Document, noticeElement: Element): void {
 	host.appendChild(sk);
 }
 
+// ── Epic Games render path ─────────────────────────────────────────────
+// The Epic library page reuses Steam's real library UI: the native
+// renderFriendsSection, the native news cards and community grid, and the
+// native achievement panel. Data is sourced from egdata + the web.
+
+/** Detect Steam's native library two-column layout so the Epic page can reuse
+ *  the real content column, sidebar and section chrome. Mirrors the detection
+ *  in injectGameData (kept separate so the Steam path stays untouched). */
+interface EpicLayout {
+	anchorRegion: HTMLElement | null;
+	sidebarColumn: HTMLElement | null;
+	contentColumn: HTMLElement | null;
+	twoColRow: HTMLElement | null;
+	buildSidebarSection: (sectionId: string, headerText: string, innerId: string, innerHtml: string, cloneInnerClass?: boolean) => HTMLElement | null;
+}
+
+function epicComputeLayout(doc: Document, noticeElement: Element): EpicLayout {
+	const notesTextEl = findElementByExactText(doc, loc('AppDetails_SectionTitle_GameNotes', 'Notes'));
+	const recordingsTextEl = findElementByExactText(doc, loc('AppDetails_SectionTitle_Media', 'Recordings and Screenshots'));
+	const layoutAnchor = notesTextEl || recordingsTextEl;
+
+	let anchorRegion: HTMLElement | null = null;
+	let sidebarColumn: HTMLElement | null = null;
+	let twoColRow: HTMLElement | null = null;
+	let contentColumn: HTMLElement | null = null;
+
+	if (layoutAnchor) {
+		let el = layoutAnchor as HTMLElement;
+		for (let i = 0; i < 8 && el.parentElement; i++) {
+			el = el.parentElement;
+			if (el.getAttribute('role') === 'region') { anchorRegion = el; break; }
+		}
+		if (anchorRegion) {
+			const getChain = (e: Element): HTMLElement[] => {
+				const c: HTMLElement[] = [e as HTMLElement];
+				let cur = e as HTMLElement;
+				while (cur.parentElement) { c.push(cur.parentElement); cur = cur.parentElement; }
+				return c;
+			};
+			const noticeChain = getChain(noticeElement);
+			const anchorChain = getChain(anchorRegion);
+			for (let ai = 1; ai < anchorChain.length; ai++) {
+				const ni = noticeChain.indexOf(anchorChain[ai]);
+				if (ni > 0) {
+					twoColRow = anchorChain[ai];
+					sidebarColumn = anchorChain[ai - 1];
+					contentColumn = noticeChain[ni - 1];
+					break;
+				}
+			}
+		}
+	}
+
+	const buildSidebarSection = (sectionId: string, headerText: string, innerId: string, innerHtml: string, cloneInnerClass = true): HTMLElement | null => {
+		if (!anchorRegion) return null;
+		const regionChildren = Array.from(anchorRegion.children);
+		const sourceH2 = regionChildren.find(c => c.tagName === 'H2') as HTMLElement | undefined;
+		const sourceBody = regionChildren.find(c => c.tagName === 'DIV') as HTMLElement | undefined;
+
+		const region = doc.createElement('div');
+		region.className = anchorRegion.className;
+		region.setAttribute('role', 'region');
+		if (sourceH2) {
+			const h2 = sourceH2.cloneNode(true) as HTMLElement;
+			const innerTxt = h2.querySelector('div div') || h2.querySelector('div') || h2;
+			innerTxt.textContent = headerText;
+			region.appendChild(h2);
+		}
+		if (sourceBody) {
+			const body = doc.createElement('div');
+			body.className = sourceBody.className;
+			const sourceInner = sourceBody.firstElementChild as HTMLElement | null;
+			const inner = doc.createElement('div');
+			inner.id = innerId;
+			if (cloneInnerClass && sourceInner) inner.className = sourceInner.className;
+			inner.innerHTML = innerHtml;
+			body.appendChild(inner);
+			region.appendChild(body);
+		}
+		const anchorWrap = anchorRegion.parentElement;
+		let outer: HTMLElement = region;
+		if (anchorWrap && anchorWrap.parentElement === sidebarColumn) {
+			const wrap = doc.createElement('div');
+			wrap.className = anchorWrap.className;
+			wrap.appendChild(region);
+			outer = wrap;
+		}
+		outer.id = sectionId;
+		return outer;
+	};
+
+	return { anchorRegion, sidebarColumn, contentColumn, twoColRow, buildSidebarSection };
+}
+
+/** Native partner-event news cards (same markup as the Steam path). */
+function renderNewsFeed(newsItems: NewsItem[], fallbackImage: string): string {
+	const grouped = groupNewsByDate(newsItems.slice(0, 3));
+	if (grouped.length === 0) {
+		return `<div style="color:#4a5562;font-size:13px;padding:20px 0;">${escapeHtml(loc('AppActivity_NoActivity', "There's no recent activity from the developers of this title or from your friends."))}</div>`;
+	}
+	const n = EVENT_CLASSES();
+	let newsHtml = '';
+	let isFirstCard = true;
+	for (const group of grouped) {
+		newsHtml += `<div class="${n.AppActivityDay}" style="margin-top:24px;">
+			<h4 class="${n.AppActivityDate}" style="margin:0 0 4px;">${group.date}<div class="${n.Rule}"></div></h4>`;
+		for (const item of group.items) {
+			const isMajor = item.event_type === 13 || item.event_type === 14;
+			const label = item.event_type !== undefined ? eventTypeLabel(item.event_type) : (item.feedlabel || 'News');
+			const preview = stripTags(item.contents).substring(0, 220);
+			const thumbUrl = item.image || fallbackImage;
+			const typeHtml = `<div class="${n.PartnerEventType}"${isMajor ? ' style="color:#1a9fff;"' : ''}><div>${escapeHtml(label)}</div></div>`;
+			if (isFirstCard) {
+				newsHtml += `
+					<div class="${n.Event} ${n.PartnerEvent} ${n.PartnerEventLargeImage_Container}${isMajor ? ' ' + n.PartnerEventFeatured : ''}" style="position:relative;margin-bottom:16px;" onclick="window.gdlOpen('${item.url}')">
+						<div class="${n.PartnerEventLargeImage_Contents}">
+							<div class="${n.ImageContainer}">
+								<img class="${n.PartnerEventLargeImage_Image}" src="${escapeHtml(thumbUrl)}" onerror="this.src='${escapeHtml(fallbackImage || '')}'" />
+							</div>
+							<div class="${n.PartnerEventLargeImage_TextColumn}" style="min-width:0;overflow:hidden;">
+								${typeHtml}
+								<div class="${n.PartnerEventLargeImage_Title}">${escapeHtml(item.title)}</div>
+								<div class="${n.PartnerEventLargeImage_Summary}">${escapeHtml(preview)}</div>
+							</div>
+						</div>
+					</div>`;
+			} else {
+				newsHtml += `
+					<div class="${n.Event} ${n.PartnerEvent} ${n.PartnerEventMediumImage_Container}${isMajor ? ' ' + n.PartnerEventLargeUpdate : ''}" style="position:relative;margin-bottom:16px;" onclick="window.gdlOpen('${item.url}')">
+						${isMajor ? `<div class="${n.LeftSideMajorUpdateBar}"></div>` : ''}
+						<div class="${n.PartnerEventMediumImage_Contents}">
+							<div class="${n.MediumImageContainer}">
+								<img class="${n.PartnerEventMediumImage_Image}" src="${escapeHtml(thumbUrl)}" style="width:100%;height:100%;object-fit:cover;display:block;" onerror="this.src='${escapeHtml(fallbackImage || '')}'" />
+							</div>
+							<div class="${n.PartnerEventMediumImage_TextColumn}" style="min-width:0;overflow:hidden;">
+								${typeHtml}
+								<div class="${n.PartnerEventMediumImage_Title}">${escapeHtml(item.title)}</div>
+								<div class="${n.PartnerEventMediumImage_Summary}">${escapeHtml(preview)}</div>
+							</div>
+						</div>
+					</div>`;
+			}
+			isFirstCard = false;
+		}
+		newsHtml += `</div>`;
+	}
+	return newsHtml;
+}
+
+/** Native community-content grid (same markup as the Steam path). */
+function renderCommunityGrid(displayItems: CommunityContentItem[]): string {
+	if (!Array.isArray(displayItems) || displayItems.length === 0) return '';
+	const screenshots = displayItems.filter(i => i.type !== 'guide');
+	const guides = displayItems.filter(i => i.type === 'guide');
+
+	const authorBar = (item: CommunityContentItem) => {
+		if (!item.author_name && !item.author_avatar) return '';
+		return `<div style="display:flex;align-items:center;gap:10px;padding:8px 12px;background:rgba(0,0,0,0.25);margin-top:auto;min-height:32px;">
+			${item.author_avatar ? `<img src="${item.author_avatar}" style="width:32px;height:32px;flex-shrink:0;" onerror="this.style.display='none'" />` : ''}
+			<span style="font-size:13px;color:#8f98a0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(item.author_name || '')}</span>
+		</div>`;
+	};
+	const CARD_BG = 'rgba(103,112,128,0.12)';
+	const screenshotCard = (item: CommunityContentItem) => {
+		const click = item.link ? ` onclick="window.gdlOpen('${item.link}')"` : '';
+		return `<div style="background:${CARD_BG};overflow:hidden;cursor:pointer;display:flex;flex-direction:column;min-width:0;"${click}>
+			<div style="position:relative;overflow:hidden;">
+				<img src="${item.image || ''}" style="width:100%;max-width:100%;aspect-ratio:16/9;object-fit:cover;display:block;" onerror="this.style.display='none'" />
+				${item.title ? `<div style="position:absolute;bottom:0;left:0;right:0;padding:8px 10px;font-size:13px;color:#fff;text-shadow:0 1px 3px rgba(0,0,0,0.8);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(item.title)}</div>` : ''}
+			</div>
+			${authorBar(item)}
+		</div>`;
+	};
+	const guideCard = (item: CommunityContentItem) => {
+		const click = item.link ? ` onclick="window.gdlOpen('${item.link}')"` : '';
+		return `<div style="background:${CARD_BG};overflow:hidden;cursor:pointer;display:flex;flex-direction:column;min-width:0;"${click}>
+			<div style="padding:8px 12px;background:rgba(0,0,0,0.25);font-size:11px;letter-spacing:0.5px;font-weight:500;color:#8f98a0;text-transform:uppercase;">${escapeHtml((item.label ? 'Community ' + item.label : 'Community Guide').toUpperCase())}</div>
+			<div style="display:flex;gap:12px;padding:12px;align-items:flex-start;">
+				<img src="${item.image || ''}" style="width:92px;height:92px;object-fit:cover;flex-shrink:0;" onerror="this.style.display='none'" />
+				<div style="font-size:15px;font-weight:500;color:#dcdedf;line-height:1.35;overflow:hidden;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;min-width:0;">${escapeHtml(item.title || '')}</div>
+			</div>
+			${authorBar(item)}
+		</div>`;
+	};
+
+	const mainCards: string[] = [];
+	let ssUsed = 0;
+	for (; ssUsed < screenshots.length && mainCards.length < 3; ssUsed++) mainCards.push(screenshotCard(screenshots[ssUsed]));
+	for (let gi = 0; gi < guides.length && mainCards.length < 6; gi++) mainCards.push(guideCard(guides[gi]));
+	for (; ssUsed < screenshots.length && mainCards.length < 6; ssUsed++) mainCards.push(screenshotCard(screenshots[ssUsed]));
+	const mainGrid = mainCards.length
+		? `<div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:38px 30px;align-items:stretch;">${mainCards.join('')}</div>`
+		: '';
+	const thumbItems = screenshots.slice(ssUsed, ssUsed + 5);
+	const thumbRow = thumbItems.length
+		? `<div style="display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px;margin-top:24px;">${thumbItems.map(t => {
+			const tclick = t.link ? ` onclick="window.gdlOpen('${t.link}')"` : '';
+			return `<div style="position:relative;overflow:hidden;cursor:pointer;"${tclick}><img src="${t.image || ''}" style="width:100%;aspect-ratio:16/9;object-fit:cover;display:block;" onerror="this.style.display='none'" /></div>`;
+		}).join('')}</div>`
+		: '';
+	return `<div style="padding:4px 0;">${mainGrid}${thumbRow}</div>`;
+}
+
+function injectEpicContent(doc: Document, notice: Element, gd: EpicGameData, friends: EpicFriend[], newsItems: NewsItem[], communityItems: CommunityContentItem[]): void {
+	try {
+		for (const id of ['gdl-epic-content', 'gdl-friends-section', 'gdl-achievements-section', 'gdl-link-bar']) {
+			const el = doc.getElementById(id);
+			if (el) el.remove();
+		}
+
+		// In-client link opener (native pages open web links in the client browser)
+		(doc.defaultView as any).gdlOpen = (u: string) => {
+			if (!u) return;
+			try {
+				const mgr = (doc.defaultView as any).MainWindowBrowserManager || (window as any).MainWindowBrowserManager;
+				if (mgr && typeof mgr.ShowURL === 'function') { mgr.ShowURL(u); return; }
+			} catch {}
+			try { doc.defaultView?.open('steam://openurl/' + u); } catch {}
+		};
+
+		// Detect Steam's native two-column library layout.
+		const { anchorRegion, sidebarColumn, contentColumn, twoColRow, buildSidebarSection } = epicComputeLayout(doc, notice);
+
+		// ── Hide the notice + single-child wrapper chain (native approach) ──
+		let hideEl: HTMLElement | null = notice as HTMLElement;
+		for (let i = 0; i < 4 && hideEl; i++) {
+			if (hideEl === contentColumn || hideEl === twoColRow) break;
+			if (i > 0 && hideEl.querySelector('[data-nsp]')) break;
+			hideEl.style.display = 'none';
+			hideEl.setAttribute('data-gdl-hidden', '1');
+			const parent = hideEl.parentElement;
+			if (!parent || parent.childElementCount > 1) break;
+			hideEl = parent;
+		}
+
+		// ── Sidebar: "Friends who play" via the REAL native renderer ──
+		let lastSidebarInsert: HTMLElement | null = null;
+		if (Array.isArray(friends) && friends.length > 0 && anchorRegion && sidebarColumn) {
+			const { cats, personas } = epicFriendsToNative(friends);
+			const node = buildSidebarSection(
+				'gdl-friends-section',
+				loc('AppDetails_SectionTitle_Friends', 'Friends who play'),
+				'gdl-epic-friends-content',
+				renderFriendsSection(cats, 'epic', gd.title, personas),
+			);
+			if (node) { sidebarColumn.insertBefore(node, sidebarColumn.firstChild); lastSidebarInsert = node; }
+		}
+
+		// ── Sidebar: Achievements (native progress panel) when the game has them ──
+		const achTotal = Array.isArray(gd.achievements) ? gd.achievements.length : 0;
+		if (achTotal > 0 && anchorRegion && sidebarColumn) {
+			const node = buildSidebarSection(
+				'gdl-achievements-section',
+				loc('AppDetails_SectionTitle_Achievements', 'Achievements'),
+				'gdl-epic-ach-content',
+				// Xbox provides the user's real unlocked count; Epic has none.
+				renderAchievementsPanel(gd.unlocked_achievements || 0, achTotal),
+				false,
+			);
+			if (node) sidebarColumn.insertBefore(node, lastSidebarInsert ? lastSidebarInsert.nextSibling : sidebarColumn.firstChild);
+		}
+
+		// ── Content column: native ACTIVITY wrapper with news + community ──
+		// Xbox data carries its own store_url; Epic builds one from the slug.
+		const storeUrl = gd.store_url
+			|| (gd.slug ? `https://store.epicgames.com/p/${gd.slug}` : 'https://store.epicgames.com/');
+		const fallbackImg = gd.wide || gd.tall || '';
+		const newsHtml = renderNewsFeed(newsItems, fallbackImg);
+		const communityHtml = renderCommunityGrid(communityItems);
+
+		const wrapper = doc.createElement('div');
+		wrapper.id = 'gdl-epic-content';
+		wrapper.className = FEED_CLASSES().ActivityFeedContainer;
+		wrapper.style.cssText = 'font-family:inherit;padding:0 12px 24px;overflow:hidden;';
+		wrapper.innerHTML = `
+			<div style="font-size:11px;font-weight:600;letter-spacing:1.5px;color:#8f98a0;margin-bottom:16px;">${escapeHtml(loc('AppDetails_SectionTitle_Activity', 'Activity').toUpperCase())}</div>
+			<div class="${FEED_CLASSES().AddToFeed} ${FEED_CLASSES().PostTextEntry} ${POST_CLASSES().PostTextEntry}">
+				<textarea class="${POST_CLASSES().PostTextEntryArea}" rows="1" placeholder="${escapeHtml(loc('AppActivity_StatusUpdate_Post', 'Say something about this game to your friends...'))}"></textarea>
+			</div>
+			<div id="gdl-epic-news">${newsHtml}</div>
+			${communityHtml ? `<div style="font-size:11px;font-weight:600;letter-spacing:1.5px;color:#8f98a0;margin:30px 0 16px;">${escapeHtml(loc('AppDetails_SectionTitle_CommunityHub', 'Community Content').toUpperCase())}</div>${communityHtml}` : ''}
+		`;
+
+		// ── Full-width link bar (same native chrome as the Steam page) ──
+		// Epic has no per-game hubs, so Community/Discussions/Guides/Support are
+		// substituted with Reddit / web searches (look-and-feel over accuracy).
+		const q = encodeURIComponent(gd.title);
+		const linkBar = doc.createElement('div');
+		linkBar.style.cssText = 'display:flex;align-items:center;padding:6px 16px;';
+		linkBar.innerHTML = ([
+			['Store Page', storeUrl],
+			['Community Hub', `https://www.reddit.com/search/?q=${q}`],
+			['Discussions', `https://www.reddit.com/search/?q=${q}&type=link`],
+			['Guides', `https://www.google.com/search?q=${q}+guide`],
+			['Support', `https://www.google.com/search?q=${q}+support`],
+		] as [string, string][]).map(([label, url]) =>
+			`<a href="#" onclick="window.gdlOpen('${url}');return false;" style="color:#8f98a0;text-decoration:none;font-size:13px;padding:6px 16px;transition:color 0.1s;" onmouseover="this.style.color='#fff'" onmouseout="this.style.color='#8f98a0'">${label}</a>`
+		).join('');
+
+		let linkBarNode: HTMLElement = linkBar;
+		if (anchorRegion) {
+			const outer = doc.createElement('div');
+			outer.className = anchorRegion.className;
+			outer.style.margin = '0';
+			const sourceBody = Array.from(anchorRegion.children).find(c => c.tagName === 'DIV') as HTMLElement | undefined;
+			if (sourceBody) {
+				const panel = doc.createElement('div');
+				panel.className = sourceBody.className;
+				panel.appendChild(linkBar);
+				outer.appendChild(panel);
+			} else {
+				outer.appendChild(linkBar);
+			}
+			linkBarNode = outer;
+		} else {
+			linkBar.style.cssText = 'display:flex;align-items:center;padding:8px 16px;background:#2a3040;border-bottom:1px solid rgba(255,255,255,0.06);';
+		}
+		linkBarNode.id = 'gdl-link-bar';
+		if (twoColRow && twoColRow.parentElement) {
+			twoColRow.parentElement.insertBefore(linkBarNode, twoColRow);
+		}
+
+		if (contentColumn) {
+			contentColumn.appendChild(wrapper);
+		} else {
+			// Fallback (native layout not detected): insert after the hidden notice.
+			let hiddenTop = notice as HTMLElement;
+			let walk: HTMLElement | null = notice as HTMLElement;
+			while (walk && walk.getAttribute('data-gdl-hidden')) { hiddenTop = walk; walk = walk.parentElement; }
+			const ip = hiddenTop.parentElement;
+			if (ip) ip.insertBefore(wrapper, hiddenTop.nextSibling);
+			else (notice.parentElement || doc.body).appendChild(wrapper);
+		}
+
+		backendLog('Injected Epic layout: content=' + !!contentColumn + ' sidebar=' + !!sidebarColumn
+			+ ' news=' + newsItems.length + ' comm=' + communityItems.length + ' fr=' + friends.length + ' ach=' + achTotal);
+	} catch (e: any) {
+		backendLog('Epic inject EXCEPTION: ' + (e && e.message ? e.message : String(e)));
+	}
+}
+
+async function tryInjectEpicData(doc: Document, notice: Element, gameTitle: string, mappingKey: string, epicMap: EpicMapping): Promise<void> {
+	// Dedupe: already showing this exact Epic game
+	if (currentInjectedAppId === mappingKey && doc.getElementById('gdl-epic-content')) return;
+	if (currentInjectedAppId && currentInjectedAppId !== mappingKey) cleanupInjection(doc);
+	currentInjectedAppId = mappingKey;
+
+	backendLog('Library page: "' + gameTitle + '" -> Epic offer ' + epicMap.offerId);
+
+	// Instant path from cache so the non-Steam notice never flashes on revisits
+	const cachedData: EpicGameData | null =
+		(epicDataCache[epicMap.offerId] !== undefined ? epicDataCache[epicMap.offerId] : cacheGet<EpicGameData>('epicdata4_' +epicMap.offerId)) || null;
+	const cachedFriends = cacheGet<EpicFriend[]>('epic_friends_v1') || [];
+	if (cachedData) {
+		const nk = cachedData.title.toLowerCase();
+		const cPatch = cacheGet<NewsItem[]>('patchnotes2_' + nk) || [];
+		const cNews = cacheGet<NewsItem[]>('epicnews_' + nk) || [];
+		const cComm = cacheGet<CommunityContentItem[]>('epiccomm_' + nk) || [];
+		injectEpicContent(doc, notice, cachedData, cachedFriends, [...cPatch, ...cNews], cComm);
+	} else {
+		hideNoticeQuick(notice);
+	}
+
+	if (injectionInFlight === mappingKey) return;
+	injectionInFlight = mappingKey;
+	let data: EpicGameData | null = null;
+	let friends: EpicFriend[] = [];
+	try {
+		[data, friends] = await Promise.all([getEpicGameData(epicMap.offerId), getEpicFriends()]);
+	} finally {
+		injectionInFlight = null;
+	}
+
+	if (!data) { backendLog('No Epic data for offer ' + epicMap.offerId); return; }
+	if (currentInjectedAppId !== mappingKey) return;
+
+	// Re-apply artwork on view so an improved logo/banner shows without re-linking.
+	const shortcutId = findShortcutAppIdByName(gameTitle);
+	if (shortcutId && !epicArtworkApplied.has(mappingKey)) {
+		epicArtworkApplied.add(mappingKey);
+		spoofEpicArtwork(shortcutId, data).catch(() => {});
+	}
+
+	// News (Google), real patch notes (Steam cross-ref), and community.
+	const [news, community, patch] = await Promise.all([
+		getEpicNews(data.title), getEpicCommunity(data.title), getPatchNotes(data.title),
+	]);
+	if (currentInjectedAppId !== mappingKey) return;
+	// Reddit often blocks server requests; fall back to the game's own screenshots.
+	let comm = community;
+	if (comm.length === 0 && Array.isArray(data.screenshots) && data.screenshots.length > 0) {
+		comm = data.screenshots.slice(0, 12).map(url => ({ type: 'screenshot', image: url, link: url }));
+	}
+	// Patch notes first so they lead the feed as the featured card.
+	injectEpicContent(doc, notice, data, friends, [...patch, ...news], comm);
+}
+
+async function tryInjectXboxData(doc: Document, notice: Element, gameTitle: string, mappingKey: string, xboxMap: XboxMapping): Promise<void> {
+	// Dedupe: already showing this exact Xbox game
+	if (currentInjectedAppId === mappingKey && doc.getElementById('gdl-epic-content')) return;
+	if (currentInjectedAppId && currentInjectedAppId !== mappingKey) cleanupInjection(doc);
+	currentInjectedAppId = mappingKey;
+
+	backendLog('Library page: "' + gameTitle + '" -> Xbox product ' + xboxMap.productId);
+
+	// Instant path from cache so the non-Steam notice never flashes on revisits
+	const cachedData: EpicGameData | null =
+		(epicDataCache[xboxMap.productId] !== undefined ? epicDataCache[xboxMap.productId] : cacheGet<EpicGameData>('xboxdata3_' + xboxMap.productId)) || null;
+	const cachedFriends = cacheGet<EpicFriend[]>('xbox_friends_v1') || [];
+	if (cachedData) {
+		const nk = cachedData.title.toLowerCase();
+		const cPatch = cacheGet<NewsItem[]>('patchnotes2_' + nk) || [];
+		const cNews = cacheGet<NewsItem[]>('epicnews_' + nk) || [];
+		const cComm = cacheGet<CommunityContentItem[]>('epiccomm_' + nk) || [];
+		injectEpicContent(doc, notice, cachedData, cachedFriends, [...cPatch, ...cNews], cComm);
+	} else {
+		hideNoticeQuick(notice);
+	}
+
+	if (injectionInFlight === mappingKey) return;
+	injectionInFlight = mappingKey;
+	let data: EpicGameData | null = null;
+	let friends: EpicFriend[] = [];
+	try {
+		[data, friends] = await Promise.all([getXboxGameData(xboxMap.productId), getXboxFriends()]);
+	} finally {
+		injectionInFlight = null;
+	}
+
+	if (!data) { backendLog('No Xbox data for product ' + xboxMap.productId); return; }
+	if (currentInjectedAppId !== mappingKey) return;
+
+	// Re-apply artwork on view so an improved logo/banner shows without re-linking.
+	const shortcutId = findShortcutAppIdByName(gameTitle);
+	if (shortcutId && !epicArtworkApplied.has(mappingKey)) {
+		epicArtworkApplied.add(mappingKey);
+		spoofEpicArtwork(shortcutId, data).catch(() => {});
+	}
+
+	// News (Google), real patch notes (Steam cross-ref), community — same sources as Epic.
+	const [news, community, patch] = await Promise.all([
+		getEpicNews(data.title), getEpicCommunity(data.title), getPatchNotes(data.title),
+	]);
+	if (currentInjectedAppId !== mappingKey) return;
+	// Reddit often blocks server requests; fall back to the game's own screenshots.
+	let comm = community;
+	if (comm.length === 0 && Array.isArray(data.screenshots) && data.screenshots.length > 0) {
+		comm = data.screenshots.slice(0, 12).map(url => ({ type: 'screenshot', image: url, link: url }));
+	}
+	// Patch notes first so they lead the feed as the featured card.
+	injectEpicContent(doc, notice, data, friends, [...patch, ...news], comm);
+}
+
 async function tryInjectLibraryData(doc: Document): Promise<void> {
 	const noticeInfo = findNonSteamNotice(doc);
 
@@ -2186,6 +3341,21 @@ async function tryInjectLibraryData(doc: Document): Promise<void> {
 	const gameTitle = noticeInfo.title;
 	const steamAppId = findMappingForTitle(gameTitle);
 	if (!steamAppId) return;
+
+	// Epic-linked games use a completely separate render path (egdata metadata
+	// + achievements + Epic account friends; no Steam news/activity/community).
+	const epicMap = parseEpicMapping(steamAppId);
+	if (epicMap) {
+		await tryInjectEpicData(doc, notice, gameTitle, steamAppId, epicMap);
+		return;
+	}
+
+	// Xbox-linked games render through the same native layout path.
+	const xboxMap = parseXboxMapping(steamAppId);
+	if (xboxMap) {
+		await tryInjectXboxData(doc, notice, gameTitle, steamAppId, xboxMap);
+		return;
+	}
 
 	// Already injected for this exact game - but Steam's React re-renders can
 	// evict just the play-bar stat while the rest survives, so re-heal it

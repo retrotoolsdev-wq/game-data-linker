@@ -2,7 +2,8 @@
 	"$schema": "https://raw.githubusercontent.com/SteamClientHomebrew/Millennium/main/src/sys/plugin-schema.json",
 	"name": "game-data-linker",
 	"common_name": "Game Data Linker",
-	"description": "Link non-Steam games to a Steam AppID to display game data (stats, achievements, etc.) in the library.",
+	"description": "Link non-Steam games to Steam, Epic Games, or Xbox to show real game data (artwork, news, patch notes, achievements, friends) in the library.",
+	"version": "1.1.0",
 	"author": "retrotoolsdev-wq",
 	"useBackend": true,
 	"backendType": "lua"

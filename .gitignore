@@ -2,3 +2,12 @@ node_modules/
 *.log
 log.txt
 mappings.json
+
+# Per-user data / secrets — never commit
+epic_auth.json
+xbox_auth.json
+sgdb_key.txt
+
+# Local debug scratch
+_*.py
+_*.ps1
