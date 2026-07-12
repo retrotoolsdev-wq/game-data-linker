@@ -1,6 +1,6 @@
 # Changelog
 
-## v1.1.0 - Epic Games and Xbox support
+## v1.0.1 - Epic Games and Xbox support
 
 Game Data Linker now works with Epic Games Store and Xbox games, not just Steam. Paste an Epic or Xbox store link into a non-Steam shortcut and its library page fills in like a Steam-linked game.
 
