@@ -1,26 +1,26 @@
 # Changelog
 
-## v1.1.0 — Epic Games & Xbox support
+## v1.1.0 - Epic Games and Xbox support
 
-Game Data Linker now works with **Epic Games Store** and **Xbox** games, not just Steam. Paste an Epic or Xbox store link into a non-Steam shortcut and its library page fills in just like a Steam-linked game.
+Game Data Linker now works with Epic Games Store and Xbox games, not just Steam. Paste an Epic or Xbox store link into a non-Steam shortcut and its library page fills in like a Steam-linked game.
 
 ### Added
 
-- **Epic Games Store support** — paste an Epic store link (e.g. `https://store.epicgames.com/p/<game>`) to link a shortcut. Sign in with your Epic account to show friends who play; metadata, achievements, artwork, screenshots, and news populate the library page in Steam's native style.
-- **Xbox support** — paste an Xbox store link (e.g. `https://www.xbox.com/games/store/<game>/<id>`) to link a shortcut. Sign in with your Microsoft / Xbox account via a secure device-code flow to show your **real friends (with avatars and gamertags)** and your **actual achievement progress**. Metadata, artwork, and screenshots apply automatically.
-- **Patch notes** — Epic and Xbox library pages now show real patch-notes / update cards in Steam's native format, matched from the game's Steam listing when available.
-- **Clean transparent logos** — game logos are sourced from [SteamGridDB](https://www.steamgriddb.com/) so titles that don't ship a proper logo still get a crisp wordmark. Linking your first Xbox game prompts once for a free SteamGridDB API key.
+- Epic Games Store support. Paste an Epic store link to link a shortcut. Sign in with your Epic account to show friends who play. Metadata, achievements, artwork, screenshots, and news load into the library page in Steam's style.
+- Xbox support. Paste an Xbox store link to link a shortcut. Sign in with your Microsoft or Xbox account through a device-code flow to show your real friends (with avatars and gamertags) and your actual achievement progress. Metadata, artwork, and screenshots apply automatically.
+- Patch notes for Epic and Xbox games, shown as update cards in Steam's format, matched from the game's Steam listing when available.
+- Clean transparent logos from SteamGridDB, so games without a built-in logo still get one. Linking your first Xbox game asks once for a free SteamGridDB API key.
 
 ### Fixed
 
-- More reliable game resolution for lesser-known Epic titles (store-link disambiguator suffixes are handled).
-- Artwork now refreshes immediately after linking, instead of only after navigating away and back.
-- Logos apply correctly for games whose store listing lacks a clean logo image.
+- Better game matching for lesser-known Epic titles (handles the extra ID suffix in store links).
+- Artwork refreshes right after linking, instead of only after leaving the page and returning.
+- Logos apply for games whose store listing has no clean logo.
 
 ### Notes
 
-- Epic does not expose profile pictures or per-user achievement unlock state, so Epic friends show initials and achievements show global rarity rather than your unlock status. Xbox provides both.
-- Not every game exists in every catalog; each data source falls back gracefully when a game isn't found there.
+- Epic does not provide profile pictures or your personal achievement unlock state, so Epic friends show initials and achievements show global rarity instead of your progress. Xbox provides both.
+- Not every game is in every catalog. When a source does not have a game, that section is skipped.
 
 ## v1.0.1
 
